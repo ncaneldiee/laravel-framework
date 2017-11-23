@@ -1,8 +1,11 @@
 <?php
 
+namespace Illuminate\Tests\Foundation;
+
+use PHPUnit\Framework\TestCase;
 use Illuminate\Foundation\AliasLoader;
 
-class FoundationAliasLoaderTest extends PHPUnit_Framework_TestCase
+class FoundationAliasLoaderTest extends TestCase
 {
     public function testLoaderCanBeCreatedAndRegisteredOnce()
     {
@@ -18,6 +21,6 @@ class FoundationAliasLoaderTest extends PHPUnit_Framework_TestCase
     public function testGetInstanceCreatesOneInstance()
     {
         $loader = AliasLoader::getInstance(['foo' => 'bar']);
-        $this->assertEquals($loader, AliasLoader::getInstance());
+        $this->assertSame($loader, AliasLoader::getInstance());
     }
 }

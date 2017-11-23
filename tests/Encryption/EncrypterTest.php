@@ -1,13 +1,31 @@
 <?php
 
-use Illuminate\Support\Str;
+namespace Illuminate\Tests\Encryption;
+
+use PHPUnit\Framework\TestCase;
 use Illuminate\Encryption\Encrypter;
 
-class EncrypterTest extends PHPUnit_Framework_TestCase
+class EncrypterTest extends TestCase
 {
     public function testEncryption()
     {
         $e = new Encrypter(str_repeat('a', 16));
+        $encrypted = $e->encrypt('foo');
+        $this->assertNotEquals('foo', $encrypted);
+        $this->assertEquals('foo', $e->decrypt($encrypted));
+    }
+
+    public function testRawStringEncryption()
+    {
+        $e = new Encrypter(str_repeat('a', 16));
+        $encrypted = $e->encryptString('foo');
+        $this->assertNotEquals('foo', $encrypted);
+        $this->assertEquals('foo', $e->decryptString($encrypted));
+    }
+
+    public function testEncryptionUsingBase64EncodedKey()
+    {
+        $e = new Encrypter(random_bytes(16));
         $encrypted = $e->encrypt('foo');
         $this->assertNotEquals('foo', $encrypted);
         $this->assertEquals('foo', $e->decrypt($encrypted));
@@ -19,10 +37,15 @@ class EncrypterTest extends PHPUnit_Framework_TestCase
         $encrypted = $e->encrypt('bar');
         $this->assertNotEquals('bar', $encrypted);
         $this->assertEquals('bar', $e->decrypt($encrypted));
+
+        $e = new Encrypter(random_bytes(32), 'AES-256-CBC');
+        $encrypted = $e->encrypt('foo');
+        $this->assertNotEquals('foo', $encrypted);
+        $this->assertEquals('foo', $e->decrypt($encrypted));
     }
 
     /**
-     * @expectedException RuntimeException
+     * @expectedException \RuntimeException
      * @expectedExceptionMessage The only supported ciphers are AES-128-CBC and AES-256-CBC with the correct key lengths.
      */
     public function testDoNoAllowLongerKey()
@@ -31,7 +54,7 @@ class EncrypterTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @expectedException RuntimeException
+     * @expectedException \RuntimeException
      * @expectedExceptionMessage The only supported ciphers are AES-128-CBC and AES-256-CBC with the correct key lengths.
      */
     public function testWithBadKeyLength()
@@ -40,7 +63,7 @@ class EncrypterTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @expectedException RuntimeException
+     * @expectedException \RuntimeException
      * @expectedExceptionMessage The only supported ciphers are AES-128-CBC and AES-256-CBC with the correct key lengths.
      */
     public function testWithBadKeyLengthAlternativeCipher()
@@ -49,7 +72,7 @@ class EncrypterTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @expectedException RuntimeException
+     * @expectedException \RuntimeException
      * @expectedExceptionMessage The only supported ciphers are AES-128-CBC and AES-256-CBC with the correct key lengths.
      */
     public function testWithUnsupportedCipher()
@@ -58,7 +81,7 @@ class EncrypterTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @expectedException Illuminate\Contracts\Encryption\DecryptException
+     * @expectedException \Illuminate\Contracts\Encryption\DecryptException
      * @expectedExceptionMessage The payload is invalid.
      */
     public function testExceptionThrownWhenPayloadIsInvalid()
@@ -70,7 +93,7 @@ class EncrypterTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @expectedException Illuminate\Contracts\Encryption\DecryptException
+     * @expectedException \Illuminate\Contracts\Encryption\DecryptException
      * @expectedExceptionMessage The MAC is invalid.
      */
     public function testExceptionThrownWithDifferentKey()
@@ -78,15 +101,5 @@ class EncrypterTest extends PHPUnit_Framework_TestCase
         $a = new Encrypter(str_repeat('a', 16));
         $b = new Encrypter(str_repeat('b', 16));
         $b->decrypt($a->encrypt('baz'));
-    }
-
-    public function testOpenSslEncrypterCanDecryptMcryptedData()
-    {
-        $key = Str::random(32);
-        $encrypter = new Illuminate\Encryption\McryptEncrypter($key);
-        $encrypted = $encrypter->encrypt('foo');
-        $openSslEncrypter = new Illuminate\Encryption\Encrypter($key, 'AES-256-CBC');
-
-        $this->assertEquals('foo', $openSslEncrypter->decrypt($encrypted));
     }
 }

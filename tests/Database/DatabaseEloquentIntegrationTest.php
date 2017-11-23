@@ -1,37 +1,21 @@
 <?php
 
-use Illuminate\Database\Connection;
+namespace Illuminate\Tests\Database;
+
+use Exception;
+use ReflectionObject;
+use PHPUnit\Framework\TestCase;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Capsule\Manager as DB;
+use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Database\Eloquent\Model as Eloquent;
+use Illuminate\Database\Eloquent\SoftDeletingScope;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Pagination\AbstractPaginator as Paginator;
 
-class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
+class DatabaseEloquentIntegrationTest extends TestCase
 {
-    /**
-     * Bootstrap Eloquent.
-     *
-     * @return void
-     */
-    public static function setUpBeforeClass()
-    {
-        Eloquent::setConnectionResolver(
-            new DatabaseIntegrationTestConnectionResolver
-        );
-
-        Eloquent::setEventDispatcher(
-            new Illuminate\Events\Dispatcher
-        );
-    }
-
-    /**
-     * Tear down Eloquent.
-     */
-    public static function tearDownAfterClass()
-    {
-        Eloquent::unsetEventDispatcher();
-        Eloquent::unsetConnectionResolver();
-    }
-
     /**
      * Setup the database schema.
      *
@@ -39,30 +23,89 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
      */
     public function setUp()
     {
-        $this->schema()->create('users', function ($table) {
+        $db = new DB;
+
+        $db->addConnection([
+            'driver'    => 'sqlite',
+            'database'  => ':memory:',
+        ]);
+
+        $db->addConnection([
+            'driver'    => 'sqlite',
+            'database'  => ':memory:',
+        ], 'second_connection');
+
+        $db->bootEloquent();
+        $db->setAsGlobal();
+
+        $this->createSchema();
+    }
+
+    protected function createSchema()
+    {
+        $this->schema('default')->create('test_orders', function ($table) {
             $table->increments('id');
-            $table->string('email')->unique();
+            $table->string('item_type');
+            $table->integer('item_id');
             $table->timestamps();
         });
 
-        $this->schema()->create('friends', function ($table) {
-            $table->integer('user_id');
-            $table->integer('friend_id');
+        $this->schema('default')->create('with_json', function ($table) {
+            $table->increments('id');
+            $table->text('json')->default(json_encode([]));
         });
 
-        $this->schema()->create('posts', function ($table) {
+        $this->schema('second_connection')->create('test_items', function ($table) {
             $table->increments('id');
-            $table->integer('user_id');
-            $table->integer('parent_id')->nullable();
-            $table->string('name');
             $table->timestamps();
         });
 
-        $this->schema()->create('photos', function ($table) {
-            $table->increments('id');
-            $table->morphs('imageable');
-            $table->string('name');
-            $table->timestamps();
+        foreach (['default', 'second_connection'] as $connection) {
+            $this->schema($connection)->create('users', function ($table) {
+                $table->increments('id');
+                $table->string('name')->nullable();
+                $table->string('email');
+                $table->timestamps();
+            });
+
+            $this->schema($connection)->create('friends', function ($table) {
+                $table->integer('user_id');
+                $table->integer('friend_id');
+                $table->integer('friend_level_id')->nullable();
+            });
+
+            $this->schema($connection)->create('posts', function ($table) {
+                $table->increments('id');
+                $table->integer('user_id');
+                $table->integer('parent_id')->nullable();
+                $table->string('name');
+                $table->timestamps();
+            });
+
+            $this->schema($connection)->create('friend_levels', function ($table) {
+                $table->increments('id');
+                $table->string('level');
+                $table->timestamps();
+            });
+
+            $this->schema($connection)->create('photos', function ($table) {
+                $table->increments('id');
+                $table->morphs('imageable');
+                $table->string('name');
+                $table->timestamps();
+            });
+
+            $this->schema($connection)->create('soft_deleted_users', function ($table) {
+                $table->increments('id');
+                $table->string('name')->nullable();
+                $table->string('email');
+                $table->timestamps();
+                $table->softDeletes();
+            });
+        }
+
+        $this->schema($connection)->create('non_incrementing_users', function ($table) {
+            $table->string('name')->nullable();
         });
     }
 
@@ -73,10 +116,13 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
      */
     public function tearDown()
     {
-        $this->schema()->drop('users');
-        $this->schema()->drop('friends');
-        $this->schema()->drop('posts');
-        $this->schema()->drop('photos');
+        foreach (['default', 'second_connection'] as $connection) {
+            $this->schema($connection)->drop('users');
+            $this->schema($connection)->drop('friends');
+            $this->schema($connection)->drop('posts');
+            $this->schema($connection)->drop('friend_levels');
+            $this->schema($connection)->drop('photos');
+        }
 
         Relation::morphMap([], false);
     }
@@ -89,15 +135,19 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         EloquentTestUser::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
         EloquentTestUser::create(['id' => 2, 'email' => 'abigailotwell@gmail.com']);
 
+        $this->assertEquals(2, EloquentTestUser::count());
+
         $model = EloquentTestUser::where('email', 'taylorotwell@gmail.com')->first();
         $this->assertEquals('taylorotwell@gmail.com', $model->email);
+        $this->assertTrue(isset($model->email));
+        $this->assertTrue(isset($model->friends));
 
         $model = EloquentTestUser::find(1);
-        $this->assertInstanceOf('EloquentTestUser', $model);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $model);
         $this->assertEquals(1, $model->id);
 
         $model = EloquentTestUser::find(2);
-        $this->assertInstanceOf('EloquentTestUser', $model);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $model);
         $this->assertEquals(2, $model->id);
 
         $missing = EloquentTestUser::find(3);
@@ -110,6 +160,21 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $collection = EloquentTestUser::find([1, 2, 3]);
         $this->assertInstanceOf('Illuminate\Database\Eloquent\Collection', $collection);
         $this->assertEquals(2, $collection->count());
+
+        $models = EloquentTestUser::where('id', 1)->cursor();
+        foreach ($models as $model) {
+            $this->assertEquals(1, $model->id);
+        }
+
+        $records = DB::table('users')->where('id', 1)->cursor();
+        foreach ($records as $record) {
+            $this->assertEquals(1, $record->id);
+        }
+
+        $records = DB::cursor('select * from users where id = ?', [1]);
+        foreach ($records as $record) {
+            $this->assertEquals(1, $record->id);
+        }
     }
 
     public function testBasicModelCollectionRetrieval()
@@ -121,8 +186,8 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
 
         $this->assertEquals(2, $models->count());
         $this->assertInstanceOf('Illuminate\Database\Eloquent\Collection', $models);
-        $this->assertInstanceOf('EloquentTestUser', $models[0]);
-        $this->assertInstanceOf('EloquentTestUser', $models[1]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $models[0]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $models[1]);
         $this->assertEquals('taylorotwell@gmail.com', $models[0]->email);
         $this->assertEquals('abigailotwell@gmail.com', $models[1]->email);
     }
@@ -133,23 +198,53 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         EloquentTestUser::create(['id' => 2, 'email' => 'abigailotwell@gmail.com']);
         EloquentTestUser::create(['id' => 3, 'email' => 'foo@gmail.com']);
 
-        Paginator::currentPageResolver(function () { return 1; });
+        Paginator::currentPageResolver(function () {
+            return 1;
+        });
         $models = EloquentTestUser::oldest('id')->paginate(2);
 
         $this->assertEquals(2, $models->count());
         $this->assertInstanceOf('Illuminate\Pagination\LengthAwarePaginator', $models);
-        $this->assertInstanceOf('EloquentTestUser', $models[0]);
-        $this->assertInstanceOf('EloquentTestUser', $models[1]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $models[0]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $models[1]);
         $this->assertEquals('taylorotwell@gmail.com', $models[0]->email);
         $this->assertEquals('abigailotwell@gmail.com', $models[1]->email);
 
-        Paginator::currentPageResolver(function () { return 2; });
+        Paginator::currentPageResolver(function () {
+            return 2;
+        });
         $models = EloquentTestUser::oldest('id')->paginate(2);
 
         $this->assertEquals(1, $models->count());
         $this->assertInstanceOf('Illuminate\Pagination\LengthAwarePaginator', $models);
-        $this->assertInstanceOf('EloquentTestUser', $models[0]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $models[0]);
         $this->assertEquals('foo@gmail.com', $models[0]->email);
+    }
+
+    public function testPaginatedModelCollectionRetrievalWhenNoElements()
+    {
+        Paginator::currentPageResolver(function () {
+            return 1;
+        });
+        $models = EloquentTestUser::oldest('id')->paginate(2);
+
+        $this->assertEquals(0, $models->count());
+        $this->assertInstanceOf('Illuminate\Pagination\LengthAwarePaginator', $models);
+
+        Paginator::currentPageResolver(function () {
+            return 2;
+        });
+        $models = EloquentTestUser::oldest('id')->paginate(2);
+
+        $this->assertEquals(0, $models->count());
+    }
+
+    public function testPaginatedModelCollectionRetrievalWhenNoElementsAndDefaultPerPage()
+    {
+        $models = EloquentTestUser::oldest('id')->paginate();
+
+        $this->assertEquals(0, $models->count());
+        $this->assertInstanceOf('Illuminate\Pagination\LengthAwarePaginator', $models);
     }
 
     public function testCountForPaginationWithGrouping()
@@ -164,16 +259,134 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $this->assertEquals(3, $query->getCountForPagination());
     }
 
-    public function testListsRetrieval()
+    public function testFirstOrCreate()
+    {
+        $user1 = EloquentTestUser::firstOrCreate(['email' => 'taylorotwell@gmail.com']);
+
+        $this->assertEquals('taylorotwell@gmail.com', $user1->email);
+        $this->assertNull($user1->name);
+
+        $user2 = EloquentTestUser::firstOrCreate(
+            ['email' => 'taylorotwell@gmail.com'],
+            ['name' => 'Taylor Otwell']
+        );
+
+        $this->assertEquals($user1->id, $user2->id);
+        $this->assertEquals('taylorotwell@gmail.com', $user2->email);
+        $this->assertNull($user2->name);
+
+        $user3 = EloquentTestUser::firstOrCreate(
+            ['email' => 'abigailotwell@gmail.com'],
+            ['name' => 'Abigail Otwell']
+        );
+
+        $this->assertNotEquals($user3->id, $user1->id);
+        $this->assertEquals('abigailotwell@gmail.com', $user3->email);
+        $this->assertEquals('Abigail Otwell', $user3->name);
+    }
+
+    public function testUpdateOrCreate()
+    {
+        $user1 = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
+
+        $user2 = EloquentTestUser::updateOrCreate(
+            ['email' => 'taylorotwell@gmail.com'],
+            ['name' => 'Taylor Otwell']
+        );
+
+        $this->assertEquals($user1->id, $user2->id);
+        $this->assertEquals('taylorotwell@gmail.com', $user2->email);
+        $this->assertEquals('Taylor Otwell', $user2->name);
+
+        $user3 = EloquentTestUser::updateOrCreate(
+            ['email' => 'themsaid@gmail.com'],
+            ['name' => 'Mohamed Said']
+        );
+
+        $this->assertEquals('Mohamed Said', $user3->name);
+        $this->assertEquals(EloquentTestUser::count(), 2);
+    }
+
+    public function testUpdateOrCreateOnDifferentConnection()
+    {
+        EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
+
+        EloquentTestUser::on('second_connection')->updateOrCreate(
+            ['email' => 'taylorotwell@gmail.com'],
+            ['name' => 'Taylor Otwell']
+        );
+
+        EloquentTestUser::on('second_connection')->updateOrCreate(
+            ['email' => 'themsaid@gmail.com'],
+            ['name' => 'Mohamed Said']
+        );
+
+        $this->assertEquals(EloquentTestUser::count(), 1);
+        $this->assertEquals(EloquentTestUser::on('second_connection')->count(), 2);
+    }
+
+    public function testCheckAndCreateMethodsOnMultiConnections()
+    {
+        EloquentTestUser::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
+        EloquentTestUser::on('second_connection')->find(
+            EloquentTestUser::on('second_connection')->insert(['id' => 2, 'email' => 'themsaid@gmail.com'])
+        );
+
+        $user1 = EloquentTestUser::on('second_connection')->findOrNew(1);
+        $user2 = EloquentTestUser::on('second_connection')->findOrNew(2);
+        $this->assertFalse($user1->exists);
+        $this->assertTrue($user2->exists);
+        $this->assertEquals('second_connection', $user1->getConnectionName());
+        $this->assertEquals('second_connection', $user2->getConnectionName());
+
+        $user1 = EloquentTestUser::on('second_connection')->firstOrNew(['email' => 'taylorotwell@gmail.com']);
+        $user2 = EloquentTestUser::on('second_connection')->firstOrNew(['email' => 'themsaid@gmail.com']);
+        $this->assertFalse($user1->exists);
+        $this->assertTrue($user2->exists);
+        $this->assertEquals('second_connection', $user1->getConnectionName());
+        $this->assertEquals('second_connection', $user2->getConnectionName());
+
+        $this->assertEquals(1, EloquentTestUser::on('second_connection')->count());
+        $user1 = EloquentTestUser::on('second_connection')->firstOrCreate(['email' => 'taylorotwell@gmail.com']);
+        $user2 = EloquentTestUser::on('second_connection')->firstOrCreate(['email' => 'themsaid@gmail.com']);
+        $this->assertEquals('second_connection', $user1->getConnectionName());
+        $this->assertEquals('second_connection', $user2->getConnectionName());
+        $this->assertEquals(2, EloquentTestUser::on('second_connection')->count());
+    }
+
+    public function testCreatingModelWithEmptyAttributes()
+    {
+        $model = EloquentTestNonIncrementing::create([]);
+
+        $this->assertFalse($model->exists);
+        $this->assertFalse($model->wasRecentlyCreated);
+    }
+
+    public function testPluck()
     {
         EloquentTestUser::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
         EloquentTestUser::create(['id' => 2, 'email' => 'abigailotwell@gmail.com']);
 
-        $simple = EloquentTestUser::oldest('id')->lists('users.email')->all();
-        $keyed = EloquentTestUser::oldest('id')->lists('users.email', 'users.id')->all();
+        $simple = EloquentTestUser::oldest('id')->pluck('users.email')->all();
+        $keyed = EloquentTestUser::oldest('id')->pluck('users.email', 'users.id')->all();
 
         $this->assertEquals(['taylorotwell@gmail.com', 'abigailotwell@gmail.com'], $simple);
         $this->assertEquals([1 => 'taylorotwell@gmail.com', 2 => 'abigailotwell@gmail.com'], $keyed);
+    }
+
+    public function testPluckWithJoin()
+    {
+        $user1 = EloquentTestUser::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
+        $user2 = EloquentTestUser::create(['id' => 2, 'email' => 'abigailotwell@gmail.com']);
+
+        $user2->posts()->create(['id' => 1, 'name' => 'First post']);
+        $user1->posts()->create(['id' => 2, 'name' => 'Second post']);
+
+        $query = EloquentTestUser::join('posts', 'users.id', '=', 'posts.user_id');
+
+        $this->assertEquals([1 => 'First post', 2 => 'Second post'], $query->pluck('posts.name', 'posts.id')->all());
+        $this->assertEquals([2 => 'First post', 1 => 'Second post'], $query->pluck('posts.name', 'users.id')->all());
+        $this->assertEquals(['abigailotwell@gmail.com' => 'First post', 'taylorotwell@gmail.com' => 'Second post'], $query->pluck('posts.name', 'users.email as user_email')->all());
     }
 
     public function testFindOrFail()
@@ -184,15 +397,16 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $single = EloquentTestUser::findOrFail(1);
         $multiple = EloquentTestUser::findOrFail([1, 2]);
 
-        $this->assertInstanceOf('EloquentTestUser', $single);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $single);
         $this->assertEquals('taylorotwell@gmail.com', $single->email);
         $this->assertInstanceOf('Illuminate\Database\Eloquent\Collection', $multiple);
-        $this->assertInstanceOf('EloquentTestUser', $multiple[0]);
-        $this->assertInstanceOf('EloquentTestUser', $multiple[1]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $multiple[0]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $multiple[1]);
     }
 
     /**
-     * @expectedException Illuminate\Database\Eloquent\ModelNotFoundException
+     * @expectedException \Illuminate\Database\Eloquent\ModelNotFoundException
+     * @expectedExceptionMessage No query results for model [Illuminate\Tests\Database\EloquentTestUser] 1
      */
     public function testFindOrFailWithSingleIdThrowsModelNotFoundException()
     {
@@ -200,7 +414,8 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @expectedException Illuminate\Database\Eloquent\ModelNotFoundException
+     * @expectedException \Illuminate\Database\Eloquent\ModelNotFoundException
+     * @expectedExceptionMessage No query results for model [Illuminate\Tests\Database\EloquentTestUser] 1, 2
      */
     public function testFindOrFailWithMultipleIdsThrowsModelNotFoundException()
     {
@@ -216,10 +431,19 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $post = $user->post;
         $user = $post->user;
 
-        $this->assertInstanceOf('EloquentTestUser', $user);
-        $this->assertInstanceOf('EloquentTestPost', $post);
+        $this->assertTrue(isset($user->post->name));
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $user);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestPost', $post);
         $this->assertEquals('taylorotwell@gmail.com', $user->email);
         $this->assertEquals('First Post', $post->name);
+    }
+
+    public function testIssetLoadsInRelationshipIfItIsntLoadedAlready()
+    {
+        $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
+        $user->post()->create(['name' => 'First Post']);
+
+        $this->assertTrue(isset($user->post->name));
     }
 
     public function testOneToManyRelationship()
@@ -233,25 +457,30 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
 
         $this->assertInstanceOf('Illuminate\Database\Eloquent\Collection', $posts);
         $this->assertEquals(2, $posts->count());
-        $this->assertInstanceOf('EloquentTestPost', $posts[0]);
-        $this->assertInstanceOf('EloquentTestPost', $posts[1]);
-        $this->assertInstanceOf('EloquentTestPost', $post2);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestPost', $posts[0]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestPost', $posts[1]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestPost', $post2);
         $this->assertEquals('Second Post', $post2->name);
-        $this->assertInstanceOf('EloquentTestUser', $post2->user);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $post2->user);
         $this->assertEquals('taylorotwell@gmail.com', $post2->user->email);
     }
 
     public function testBasicModelHydration()
     {
-        EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
-        EloquentTestUser::create(['email' => 'abigailotwell@gmail.com']);
+        $user = new EloquentTestUser(['email' => 'taylorotwell@gmail.com']);
+        $user->setConnection('second_connection');
+        $user->save();
 
-        $models = EloquentTestUser::hydrateRaw('SELECT * FROM users WHERE email = ?', ['abigailotwell@gmail.com'], 'foo_connection');
+        $user = new EloquentTestUser(['email' => 'abigailotwell@gmail.com']);
+        $user->setConnection('second_connection');
+        $user->save();
+
+        $models = EloquentTestUser::on('second_connection')->fromQuery('SELECT * FROM users WHERE email = ?', ['abigailotwell@gmail.com']);
 
         $this->assertInstanceOf('Illuminate\Database\Eloquent\Collection', $models);
-        $this->assertInstanceOf('EloquentTestUser', $models[0]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $models[0]);
         $this->assertEquals('abigailotwell@gmail.com', $models[0]->email);
-        $this->assertEquals('foo_connection', $models[0]->getConnectionName());
+        $this->assertEquals('second_connection', $models[0]->getConnectionName());
         $this->assertEquals(1, $models->count());
     }
 
@@ -260,9 +489,73 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
         $friend = $user->friends()->create(['email' => 'abigailotwell@gmail.com']);
 
+        $this->assertTrue(isset($user->friends[0]->id));
+
         $results = EloquentTestUser::has('friends')->get();
 
-        $this->assertEquals(1, count($results));
+        $this->assertCount(1, $results);
+        $this->assertEquals('taylorotwell@gmail.com', $results->first()->email);
+    }
+
+    public function testWhereHasOnSelfReferencingBelongsToManyRelationship()
+    {
+        $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
+        $friend = $user->friends()->create(['email' => 'abigailotwell@gmail.com']);
+
+        $results = EloquentTestUser::whereHas('friends', function ($query) {
+            $query->where('email', 'abigailotwell@gmail.com');
+        })->get();
+
+        $this->assertCount(1, $results);
+        $this->assertEquals('taylorotwell@gmail.com', $results->first()->email);
+    }
+
+    public function testHasOnNestedSelfReferencingBelongsToManyRelationship()
+    {
+        $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
+        $friend = $user->friends()->create(['email' => 'abigailotwell@gmail.com']);
+        $nestedFriend = $friend->friends()->create(['email' => 'foo@gmail.com']);
+
+        $results = EloquentTestUser::has('friends.friends')->get();
+
+        $this->assertCount(1, $results);
+        $this->assertEquals('taylorotwell@gmail.com', $results->first()->email);
+    }
+
+    public function testWhereHasOnNestedSelfReferencingBelongsToManyRelationship()
+    {
+        $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
+        $friend = $user->friends()->create(['email' => 'abigailotwell@gmail.com']);
+        $nestedFriend = $friend->friends()->create(['email' => 'foo@gmail.com']);
+
+        $results = EloquentTestUser::whereHas('friends.friends', function ($query) {
+            $query->where('email', 'foo@gmail.com');
+        })->get();
+
+        $this->assertCount(1, $results);
+        $this->assertEquals('taylorotwell@gmail.com', $results->first()->email);
+    }
+
+    public function testHasOnSelfReferencingBelongsToManyRelationshipWithWherePivot()
+    {
+        $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
+        $friend = $user->friends()->create(['email' => 'abigailotwell@gmail.com']);
+
+        $results = EloquentTestUser::has('friendsOne')->get();
+
+        $this->assertCount(1, $results);
+        $this->assertEquals('taylorotwell@gmail.com', $results->first()->email);
+    }
+
+    public function testHasOnNestedSelfReferencingBelongsToManyRelationshipWithWherePivot()
+    {
+        $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
+        $friend = $user->friends()->create(['email' => 'abigailotwell@gmail.com']);
+        $nestedFriend = $friend->friends()->create(['email' => 'foo@gmail.com']);
+
+        $results = EloquentTestUser::has('friendsOne.friendsTwo')->get();
+
+        $this->assertCount(1, $results);
         $this->assertEquals('taylorotwell@gmail.com', $results->first()->email);
     }
 
@@ -273,7 +566,55 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
 
         $results = EloquentTestPost::has('parentPost')->get();
 
-        $this->assertEquals(1, count($results));
+        $this->assertCount(1, $results);
+        $this->assertEquals('Child Post', $results->first()->name);
+    }
+
+    public function testAggregatedValuesOfDatetimeField()
+    {
+        EloquentTestUser::create(['id' => 1, 'email' => 'test1@test.test', 'created_at' => '2016-08-10 09:21:00', 'updated_at' => \Illuminate\Support\Carbon::now()]);
+        EloquentTestUser::create(['id' => 2, 'email' => 'test2@test.test', 'created_at' => '2016-08-01 12:00:00', 'updated_at' => \Illuminate\Support\Carbon::now()]);
+
+        $this->assertEquals('2016-08-10 09:21:00', EloquentTestUser::max('created_at'));
+        $this->assertEquals('2016-08-01 12:00:00', EloquentTestUser::min('created_at'));
+    }
+
+    public function testWhereHasOnSelfReferencingBelongsToRelationship()
+    {
+        $parentPost = EloquentTestPost::create(['name' => 'Parent Post', 'user_id' => 1]);
+        $childPost = EloquentTestPost::create(['name' => 'Child Post', 'parent_id' => $parentPost->id, 'user_id' => 2]);
+
+        $results = EloquentTestPost::whereHas('parentPost', function ($query) {
+            $query->where('name', 'Parent Post');
+        })->get();
+
+        $this->assertCount(1, $results);
+        $this->assertEquals('Child Post', $results->first()->name);
+    }
+
+    public function testHasOnNestedSelfReferencingBelongsToRelationship()
+    {
+        $grandParentPost = EloquentTestPost::create(['name' => 'Grandparent Post', 'user_id' => 1]);
+        $parentPost = EloquentTestPost::create(['name' => 'Parent Post', 'parent_id' => $grandParentPost->id, 'user_id' => 2]);
+        $childPost = EloquentTestPost::create(['name' => 'Child Post', 'parent_id' => $parentPost->id, 'user_id' => 3]);
+
+        $results = EloquentTestPost::has('parentPost.parentPost')->get();
+
+        $this->assertCount(1, $results);
+        $this->assertEquals('Child Post', $results->first()->name);
+    }
+
+    public function testWhereHasOnNestedSelfReferencingBelongsToRelationship()
+    {
+        $grandParentPost = EloquentTestPost::create(['name' => 'Grandparent Post', 'user_id' => 1]);
+        $parentPost = EloquentTestPost::create(['name' => 'Parent Post', 'parent_id' => $grandParentPost->id, 'user_id' => 2]);
+        $childPost = EloquentTestPost::create(['name' => 'Child Post', 'parent_id' => $parentPost->id, 'user_id' => 3]);
+
+        $results = EloquentTestPost::whereHas('parentPost.parentPost', function ($query) {
+            $query->where('name', 'Grandparent Post');
+        })->get();
+
+        $this->assertCount(1, $results);
         $this->assertEquals('Child Post', $results->first()->name);
     }
 
@@ -284,8 +625,62 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
 
         $results = EloquentTestPost::has('childPosts')->get();
 
-        $this->assertEquals(1, count($results));
+        $this->assertCount(1, $results);
         $this->assertEquals('Parent Post', $results->first()->name);
+    }
+
+    public function testWhereHasOnSelfReferencingHasManyRelationship()
+    {
+        $parentPost = EloquentTestPost::create(['name' => 'Parent Post', 'user_id' => 1]);
+        $childPost = EloquentTestPost::create(['name' => 'Child Post', 'parent_id' => $parentPost->id, 'user_id' => 2]);
+
+        $results = EloquentTestPost::whereHas('childPosts', function ($query) {
+            $query->where('name', 'Child Post');
+        })->get();
+
+        $this->assertCount(1, $results);
+        $this->assertEquals('Parent Post', $results->first()->name);
+    }
+
+    public function testHasOnNestedSelfReferencingHasManyRelationship()
+    {
+        $grandParentPost = EloquentTestPost::create(['name' => 'Grandparent Post', 'user_id' => 1]);
+        $parentPost = EloquentTestPost::create(['name' => 'Parent Post', 'parent_id' => $grandParentPost->id, 'user_id' => 2]);
+        $childPost = EloquentTestPost::create(['name' => 'Child Post', 'parent_id' => $parentPost->id, 'user_id' => 3]);
+
+        $results = EloquentTestPost::has('childPosts.childPosts')->get();
+
+        $this->assertCount(1, $results);
+        $this->assertEquals('Grandparent Post', $results->first()->name);
+    }
+
+    public function testWhereHasOnNestedSelfReferencingHasManyRelationship()
+    {
+        $grandParentPost = EloquentTestPost::create(['name' => 'Grandparent Post', 'user_id' => 1]);
+        $parentPost = EloquentTestPost::create(['name' => 'Parent Post', 'parent_id' => $grandParentPost->id, 'user_id' => 2]);
+        $childPost = EloquentTestPost::create(['name' => 'Child Post', 'parent_id' => $parentPost->id, 'user_id' => 3]);
+
+        $results = EloquentTestPost::whereHas('childPosts.childPosts', function ($query) {
+            $query->where('name', 'Child Post');
+        })->get();
+
+        $this->assertCount(1, $results);
+        $this->assertEquals('Grandparent Post', $results->first()->name);
+    }
+
+    public function testHasWithNonWhereBindings()
+    {
+        $user = EloquentTestUser::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
+
+        $user->posts()->create(['name' => 'Post 2'])
+             ->photos()->create(['name' => 'photo.jpg']);
+
+        $query = EloquentTestUser::has('postWithPhotos');
+
+        $bindingsCount = count($query->getBindings());
+        $questionMarksCount = substr_count($query->toSql(), '?');
+
+        $this->assertEquals($questionMarksCount, $bindingsCount);
     }
 
     public function testBelongsToManyRelationshipModelsAreProperlyHydratedOverChunkedRequest()
@@ -294,7 +689,7 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $friend = $user->friends()->create(['email' => 'abigailotwell@gmail.com']);
 
         EloquentTestUser::first()->friends()->chunk(2, function ($friends) use ($user, $friend) {
-            $this->assertEquals(1, count($friends));
+            $this->assertCount(1, $friends);
             $this->assertEquals('abigailotwell@gmail.com', $friends->first()->email);
             $this->assertEquals($user->id, $friends->first()->pivot->user_id);
             $this->assertEquals($friend->id, $friends->first()->pivot->friend_id);
@@ -313,6 +708,26 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $this->assertEquals('taylorotwell@gmail.com', $post->first()->user->email);
     }
 
+    public function testBasicNestedSelfReferencingHasManyEagerLoading()
+    {
+        $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
+        $post = $user->posts()->create(['name' => 'First Post']);
+        $post->childPosts()->create(['name' => 'Child Post', 'user_id' => $user->id]);
+
+        $user = EloquentTestUser::with('posts.childPosts')->where('email', 'taylorotwell@gmail.com')->first();
+
+        $this->assertNotNull($user->posts->first());
+        $this->assertEquals('First Post', $user->posts->first()->name);
+
+        $this->assertNotNull($user->posts->first()->childPosts->first());
+        $this->assertEquals('Child Post', $user->posts->first()->childPosts->first()->name);
+
+        $post = EloquentTestPost::with('parentPost.user')->where('name', 'Child Post')->get();
+        $this->assertNotNull($post->first()->parentPost);
+        $this->assertNotNull($post->first()->parentPost->user);
+        $this->assertEquals('taylorotwell@gmail.com', $post->first()->parentPost->user->email);
+    }
+
     public function testBasicMorphManyRelationship()
     {
         $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
@@ -323,9 +738,9 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $post->photos()->create(['name' => 'Hero 2']);
 
         $this->assertInstanceOf('Illuminate\Database\Eloquent\Collection', $user->photos);
-        $this->assertInstanceOf('EloquentTestPhoto', $user->photos[0]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestPhoto', $user->photos[0]);
         $this->assertInstanceOf('Illuminate\Database\Eloquent\Collection', $post->photos);
-        $this->assertInstanceOf('EloquentTestPhoto', $post->photos[0]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestPhoto', $post->photos[0]);
         $this->assertEquals(2, $user->photos->count());
         $this->assertEquals(2, $post->photos->count());
         $this->assertEquals('Avatar 1', $user->photos[0]->name);
@@ -337,8 +752,8 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
 
         $this->assertInstanceOf('Illuminate\Database\Eloquent\Collection', $photos);
         $this->assertEquals(4, $photos->count());
-        $this->assertInstanceOf('EloquentTestUser', $photos[0]->imageable);
-        $this->assertInstanceOf('EloquentTestPost', $photos[2]->imageable);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $photos[0]->imageable);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestPost', $photos[2]->imageable);
         $this->assertEquals('taylorotwell@gmail.com', $photos[1]->imageable->email);
         $this->assertEquals('First Post', $photos[3]->imageable->name);
     }
@@ -346,8 +761,8 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
     public function testMorphMapIsUsedForCreatingAndFetchingThroughRelation()
     {
         Relation::morphMap([
-            'user' => 'EloquentTestUser',
-            'post' => 'EloquentTestPost',
+            'user' => 'Illuminate\Tests\Database\EloquentTestUser',
+            'post' => 'Illuminate\Tests\Database\EloquentTestPost',
         ]);
 
         $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
@@ -358,9 +773,9 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $post->photos()->create(['name' => 'Hero 2']);
 
         $this->assertInstanceOf('Illuminate\Database\Eloquent\Collection', $user->photos);
-        $this->assertInstanceOf('EloquentTestPhoto', $user->photos[0]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestPhoto', $user->photos[0]);
         $this->assertInstanceOf('Illuminate\Database\Eloquent\Collection', $post->photos);
-        $this->assertInstanceOf('EloquentTestPhoto', $post->photos[0]);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestPhoto', $post->photos[0]);
         $this->assertEquals(2, $user->photos->count());
         $this->assertEquals(2, $post->photos->count());
         $this->assertEquals('Avatar 1', $user->photos[0]->name);
@@ -377,8 +792,8 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
     public function testMorphMapIsUsedWhenFetchingParent()
     {
         Relation::morphMap([
-            'user' => 'EloquentTestUser',
-            'post' => 'EloquentTestPost',
+            'user' => 'Illuminate\Tests\Database\EloquentTestUser',
+            'post' => 'Illuminate\Tests\Database\EloquentTestPost',
         ]);
 
         $user = EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
@@ -386,16 +801,16 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
 
         $photo = EloquentTestPhoto::first();
         $this->assertEquals('user', $photo->imageable_type);
-        $this->assertInstanceOf('EloquentTestUser', $photo->imageable);
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestUser', $photo->imageable);
     }
 
     public function testMorphMapIsMergedByDefault()
     {
         $map1 = [
-            'user' => 'EloquentTestUser',
+            'user' => 'Illuminate\Tests\Database\EloquentTestUser',
         ];
         $map2 = [
-            'post' => 'EloquentTestPost',
+            'post' => 'Illuminate\Tests\Database\EloquentTestPost',
         ];
 
         Relation::morphMap($map1);
@@ -407,10 +822,10 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
     public function testMorphMapOverwritesCurrentMap()
     {
         $map1 = [
-            'user' => 'EloquentTestUser',
+            'user' => 'Illuminate\Tests\Database\EloquentTestUser',
         ];
         $map2 = [
-            'post' => 'EloquentTestPost',
+            'post' => 'Illuminate\Tests\Database\EloquentTestPost',
         ];
 
         Relation::morphMap($map1, false);
@@ -421,9 +836,54 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
 
     public function testEmptyMorphToRelationship()
     {
-        $photo = EloquentTestPhoto::create(['name' => 'Avatar 1']);
+        $photo = new EloquentTestPhoto;
 
         $this->assertNull($photo->imageable);
+    }
+
+    public function testSaveOrFail()
+    {
+        $date = '1970-01-01';
+        $post = new EloquentTestPost([
+            'user_id' => 1, 'name' => 'Post', 'created_at' => $date, 'updated_at' => $date,
+        ]);
+
+        $this->assertTrue($post->saveOrFail());
+        $this->assertEquals(1, EloquentTestPost::count());
+    }
+
+    public function testSavingJSONFields()
+    {
+        $model = EloquentTestWithJSON::create(['json' => ['x' => 0]]);
+        $this->assertEquals(['x' => 0], $model->json);
+
+        $model->fillable(['json->y', 'json->a->b']);
+
+        $model->update(['json->y' => '1']);
+        $this->assertArrayNotHasKey('json->y', $model->toArray());
+        $this->assertEquals(['x' => 0, 'y' => 1], $model->json);
+
+        $model->update(['json->a->b' => '3']);
+        $this->assertArrayNotHasKey('json->a->b', $model->toArray());
+        $this->assertEquals(['x' => 0, 'y' => 1, 'a' => ['b' => 3]], $model->json);
+    }
+
+    /**
+     * @expectedException \Illuminate\Database\QueryException
+     * @expectedExceptionMessage SQLSTATE[23000]:
+     */
+    public function testSaveOrFailWithDuplicatedEntry()
+    {
+        $date = '1970-01-01';
+        EloquentTestPost::create([
+            'id' => 1, 'user_id' => 1, 'name' => 'Post', 'created_at' => $date, 'updated_at' => $date,
+        ]);
+
+        $post = new EloquentTestPost([
+            'id' => 1, 'user_id' => 1, 'name' => 'Post', 'created_at' => $date, 'updated_at' => $date,
+        ]);
+
+        $post->saveOrFail();
     }
 
     public function testMultiInsertsWithDifferentValues()
@@ -450,13 +910,66 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $this->assertEquals(2, EloquentTestPost::count());
     }
 
+    public function testNestedTransactions()
+    {
+        $user = EloquentTestUser::create(['email' => 'taylor@laravel.com']);
+        $this->connection()->transaction(function () use ($user) {
+            try {
+                $this->connection()->transaction(function () use ($user) {
+                    $user->email = 'otwell@laravel.com';
+                    $user->save();
+                    throw new Exception;
+                });
+            } catch (Exception $e) {
+                // ignore the exception
+            }
+            $user = EloquentTestUser::first();
+            $this->assertEquals('taylor@laravel.com', $user->email);
+        });
+    }
+
+    public function testNestedTransactionsUsingSaveOrFailWillSucceed()
+    {
+        $user = EloquentTestUser::create(['email' => 'taylor@laravel.com']);
+        $this->connection()->transaction(function () use ($user) {
+            try {
+                $user->email = 'otwell@laravel.com';
+                $user->saveOrFail();
+            } catch (Exception $e) {
+                // ignore the exception
+            }
+
+            $user = EloquentTestUser::first();
+            $this->assertEquals('otwell@laravel.com', $user->email);
+            $this->assertEquals(1, $user->id);
+        });
+    }
+
+    public function testNestedTransactionsUsingSaveOrFailWillFails()
+    {
+        $user = EloquentTestUser::create(['email' => 'taylor@laravel.com']);
+        $this->connection()->transaction(function () use ($user) {
+            try {
+                $user->id = 'invalid';
+                $user->email = 'otwell@laravel.com';
+                $user->saveOrFail();
+            } catch (Exception $e) {
+                // ignore the exception
+            }
+
+            $user = EloquentTestUser::first();
+            $this->assertEquals('taylor@laravel.com', $user->email);
+            $this->assertEquals(1, $user->id);
+        });
+    }
+
     public function testToArrayIncludesDefaultFormattedTimestamps()
     {
         $model = new EloquentTestUser;
 
         $model->setRawAttributes([
-            'created_at'    => '2012-12-04',
-            'updated_at'    => '2012-12-05',
+            'created_at' => '2012-12-04',
+            'updated_at' => '2012-12-05',
         ]);
 
         $array = $model->toArray();
@@ -471,14 +984,229 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
         $model->setDateFormat('d-m-y');
 
         $model->setRawAttributes([
-            'created_at'    => '2012-12-04',
-            'updated_at'    => '2012-12-05',
+            'created_at' => '2012-12-04',
+            'updated_at' => '2012-12-05',
         ]);
 
         $array = $model->toArray();
 
         $this->assertEquals('04-12-12', $array['created_at']);
         $this->assertEquals('05-12-12', $array['updated_at']);
+    }
+
+    public function testIncrementingPrimaryKeysAreCastToIntegersByDefault()
+    {
+        EloquentTestUser::create(['email' => 'taylorotwell@gmail.com']);
+
+        $user = EloquentTestUser::first();
+        $this->assertInternalType('int', $user->id);
+    }
+
+    public function testDefaultIncrementingPrimaryKeyIntegerCastCanBeOverwritten()
+    {
+        EloquentTestUserWithStringCastId::create(['email' => 'taylorotwell@gmail.com']);
+
+        $user = EloquentTestUserWithStringCastId::first();
+        $this->assertInternalType('string', $user->id);
+    }
+
+    public function testRelationsArePreloadedInGlobalScope()
+    {
+        $user = EloquentTestUserWithGlobalScope::create(['email' => 'taylorotwell@gmail.com']);
+        $user->posts()->create(['name' => 'My Post']);
+
+        $result = EloquentTestUserWithGlobalScope::first();
+
+        $this->assertCount(1, $result->getRelations());
+    }
+
+    public function testModelIgnoredByGlobalScopeCanBeRefreshed()
+    {
+        $user = EloquentTestUserWithOmittingGlobalScope::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
+
+        $this->assertNotNull($user->fresh());
+    }
+
+    public function testGlobalScopeCanBeRemovedByOtherGlobalScope()
+    {
+        $user = EloquentTestUserWithGlobalScopeRemovingOtherScope::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
+        $user->delete();
+
+        $this->assertNotNull(EloquentTestUserWithGlobalScopeRemovingOtherScope::find($user->id));
+    }
+
+    public function testForPageAfterIdCorrectlyPaginates()
+    {
+        EloquentTestUser::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
+        EloquentTestUser::create(['id' => 2, 'email' => 'abigailotwell@gmail.com']);
+
+        $results = EloquentTestUser::forPageAfterId(15, 1);
+        $this->assertInstanceOf('Illuminate\Database\Eloquent\Builder', $results);
+        $this->assertEquals(2, $results->first()->id);
+
+        $results = EloquentTestUser::orderBy('id', 'desc')->forPageAfterId(15, 1);
+        $this->assertInstanceOf('Illuminate\Database\Eloquent\Builder', $results);
+        $this->assertEquals(2, $results->first()->id);
+    }
+
+    public function testMorphToRelationsAcrossDatabaseConnections()
+    {
+        $item = null;
+
+        EloquentTestItem::create(['id' => 1]);
+        EloquentTestOrder::create(['id' => 1, 'item_type' => EloquentTestItem::class, 'item_id' => 1]);
+        try {
+            $item = EloquentTestOrder::first()->item;
+        } catch (Exception $e) {
+            // ignore the exception
+        }
+
+        $this->assertInstanceOf('Illuminate\Tests\Database\EloquentTestItem', $item);
+    }
+
+    public function testBelongsToManyCustomPivot()
+    {
+        $john = EloquentTestUserWithCustomFriendPivot::create(['id' => 1, 'name' => 'John Doe', 'email' => 'johndoe@example.com']);
+        $jane = EloquentTestUserWithCustomFriendPivot::create(['id' => 2, 'name' => 'Jane Doe', 'email' => 'janedoe@example.com']);
+        $jack = EloquentTestUserWithCustomFriendPivot::create(['id' => 3, 'name' => 'Jack Doe', 'email' => 'jackdoe@example.com']);
+        $jule = EloquentTestUserWithCustomFriendPivot::create(['id' => 4, 'name' => 'Jule Doe', 'email' => 'juledoe@example.com']);
+
+        EloquentTestFriendLevel::create(['id' => 1, 'level' => 'acquaintance']);
+        EloquentTestFriendLevel::create(['id' => 2, 'level' => 'friend']);
+        EloquentTestFriendLevel::create(['id' => 3, 'level' => 'bff']);
+
+        $john->friends()->attach($jane, ['friend_level_id' => 1]);
+        $john->friends()->attach($jack, ['friend_level_id' => 2]);
+        $john->friends()->attach($jule, ['friend_level_id' => 3]);
+
+        $johnWithFriends = EloquentTestUserWithCustomFriendPivot::with('friends')->find(1);
+
+        $this->assertCount(3, $johnWithFriends->friends);
+        $this->assertEquals('friend', $johnWithFriends->friends->find(3)->pivot->level->level);
+        $this->assertEquals('Jule Doe', $johnWithFriends->friends->find(4)->pivot->friend->name);
+    }
+
+    public function testIsAfterRetrievingTheSameModel()
+    {
+        $saved = EloquentTestUser::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
+        $retrieved = EloquentTestUser::find(1);
+
+        $this->assertTrue($saved->is($retrieved));
+    }
+
+    public function testFreshMethodOnModel()
+    {
+        $now = \Illuminate\Support\Carbon::now();
+        \Illuminate\Support\Carbon::setTestNow($now);
+
+        $storedUser1 = EloquentTestUser::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
+        $storedUser1->newQuery()->update(['email' => 'dev@mathieutu.ovh', 'name' => 'Mathieu TUDISCO']);
+        $freshStoredUser1 = $storedUser1->fresh();
+
+        $storedUser2 = EloquentTestUser::create(['id' => 2, 'email' => 'taylorotwell@gmail.com']);
+        $storedUser2->newQuery()->update(['email' => 'dev@mathieutu.ovh']);
+        $freshStoredUser2 = $storedUser2->fresh();
+
+        $notStoredUser = new EloquentTestUser(['id' => 3, 'email' => 'taylorotwell@gmail.com']);
+        $freshNotStoredUser = $notStoredUser->fresh();
+
+        $this->assertEquals(['id' => 1, 'email' => 'taylorotwell@gmail.com', 'created_at' => $now, 'updated_at' => $now], $storedUser1->toArray());
+        $this->assertEquals(['id' => 1, 'name' => 'Mathieu TUDISCO', 'email' => 'dev@mathieutu.ovh', 'created_at' => $now, 'updated_at' => $now], $freshStoredUser1->toArray());
+        $this->assertInstanceOf(EloquentTestUser::class, $storedUser1);
+
+        $this->assertEquals(['id' => 2, 'email' => 'taylorotwell@gmail.com', 'created_at' => $now, 'updated_at' => $now], $storedUser2->toArray());
+        $this->assertEquals(['id' => 2, 'name' => null, 'email' => 'dev@mathieutu.ovh', 'created_at' => $now, 'updated_at' => $now], $freshStoredUser2->toArray());
+        $this->assertInstanceOf(EloquentTestUser::class, $storedUser2);
+
+        $this->assertEquals(['id' => 3, 'email' => 'taylorotwell@gmail.com'], $notStoredUser->toArray());
+        $this->assertNull($freshNotStoredUser);
+    }
+
+    public function testFreshMethodOnCollection()
+    {
+        EloquentTestUser::create(['id' => 1, 'email' => 'taylorotwell@gmail.com']);
+        EloquentTestUser::create(['id' => 2, 'email' => 'taylorotwell@gmail.com']);
+
+        $users = EloquentTestUser::all()
+            ->add(new EloquentTestUser(['id' => 3, 'email' => 'taylorotwell@gmail.com']));
+
+        EloquentTestUser::find(1)->update(['name' => 'Mathieu TUDISCO']);
+        EloquentTestUser::find(2)->update(['email' => 'dev@mathieutu.ovh']);
+
+        $this->assertEquals($users->map->fresh(), $users->fresh());
+
+        $users = new Collection();
+        $this->assertEquals($users->map->fresh(), $users->fresh());
+    }
+
+    public function testTimestampsUsingDefaultDateFormat()
+    {
+        $model = new EloquentTestUser;
+        $model->setDateFormat('Y-m-d H:i:s'); // Default MySQL/PostgreSQL/SQLite date format
+        $model->setRawAttributes([
+            'created_at' => '2017-11-14 08:23:19',
+        ]);
+
+        $this->assertEquals('2017-11-14 08:23:19.000000', $this->getRawDateTimeString($model->getAttribute('created_at')));
+        $this->assertEquals('2017-11-14 08:23:19', $model->fromDateTime($model->getAttribute('created_at')));
+    }
+
+    public function testTimestampsUsingDefaultSqlServerDateFormat()
+    {
+        $model = new EloquentTestUser;
+        $model->setDateFormat('Y-m-d H:i:s.v'); // Default SQL Server date format
+        $model->setRawAttributes([
+            'created_at' => '2017-11-14 08:23:19.000',
+            'updated_at' => '2017-11-14 08:23:19.734',
+        ]);
+
+        $this->assertEquals('2017-11-14 08:23:19.000000', $this->getRawDateTimeString($model->getAttribute('created_at')));
+        $this->assertEquals('2017-11-14 08:23:19.734000', $this->getRawDateTimeString($model->getAttribute('updated_at')));
+        $this->assertEquals('2017-11-14 08:23:19.000', $model->fromDateTime($model->getAttribute('created_at')));
+        $this->assertEquals('2017-11-14 08:23:19.734', $model->fromDateTime($model->getAttribute('updated_at')));
+    }
+
+    public function testTimestampsUsingCustomDateFormat()
+    {
+        // Simulating using custom precisions with timestamps(4)
+        $model = new EloquentTestUser;
+        $model->setDateFormat('Y-m-d H:i:s.u'); // Custom date format
+        $model->setRawAttributes([
+            'created_at' => '2017-11-14 08:23:19.0000',
+            'updated_at' => '2017-11-14 08:23:19.7348',
+        ]);
+
+        $this->assertEquals('2017-11-14 08:23:19.000000', $this->getRawDateTimeString($model->getAttribute('created_at')));
+        $this->assertEquals('2017-11-14 08:23:19.734800', $this->getRawDateTimeString($model->getAttribute('updated_at')));
+        // Note: when storing databases would truncate the value to the given precision
+        $this->assertEquals('2017-11-14 08:23:19.000000', $model->fromDateTime($model->getAttribute('created_at')));
+        $this->assertEquals('2017-11-14 08:23:19.734800', $model->fromDateTime($model->getAttribute('updated_at')));
+    }
+
+    public function testTimestampsUsingOldSqlServerDateFormat()
+    {
+        $model = new EloquentTestUser;
+        $model->setDateFormat('Y-m-d H:i:s.000'); // Old SQL Server date format
+        $model->setRawAttributes([
+            'created_at' => '2017-11-14 08:23:19.000',
+        ]);
+
+        $this->assertEquals('2017-11-14 08:23:19.000000', $this->getRawDateTimeString($model->getAttribute('created_at')));
+        $this->assertEquals('2017-11-14 08:23:19.000', $model->fromDateTime($model->getAttribute('created_at')));
+    }
+
+    /**
+     * @expectedException \InvalidArgumentException
+     */
+    public function testTimestampsUsingOldSqlServerDateFormatFailInEdgeCases()
+    {
+        $model = new EloquentTestUser;
+        $model->setDateFormat('Y-m-d H:i:s.000'); // Old SQL Server date format
+        $model->setRawAttributes([
+            'updated_at' => '2017-11-14 08:23:19.734',
+        ]);
+
+        $attribute = $model->fromDateTime($model->getAttribute('updated_at'));
     }
 
     /**
@@ -488,21 +1216,26 @@ class DatabaseEloquentIntegrationTest extends PHPUnit_Framework_TestCase
     /**
      * Get a database connection instance.
      *
-     * @return Connection
+     * @return \Illuminate\Database\Connection
      */
-    protected function connection()
+    protected function connection($connection = 'default')
     {
-        return Eloquent::getConnectionResolver()->connection();
+        return Eloquent::getConnectionResolver()->connection($connection);
     }
 
     /**
      * Get a schema builder instance.
      *
-     * @return Schema\Builder
+     * @return \Illuminate\Database\Schema\Builder
      */
-    protected function schema()
+    protected function schema($connection = 'default')
     {
-        return $this->connection()->getSchemaBuilder();
+        return $this->connection($connection)->getSchemaBuilder();
+    }
+
+    protected function getRawDateTimeString($object)
+    {
+        return (new ReflectionObject($object))->getProperty('date')->getValue($object);
     }
 }
 
@@ -516,22 +1249,99 @@ class EloquentTestUser extends Eloquent
 
     public function friends()
     {
-        return $this->belongsToMany('EloquentTestUser', 'friends', 'user_id', 'friend_id');
+        return $this->belongsToMany('Illuminate\Tests\Database\EloquentTestUser', 'friends', 'user_id', 'friend_id');
+    }
+
+    public function friendsOne()
+    {
+        return $this->belongsToMany('Illuminate\Tests\Database\EloquentTestUser', 'friends', 'user_id', 'friend_id')->wherePivot('user_id', 1);
+    }
+
+    public function friendsTwo()
+    {
+        return $this->belongsToMany('Illuminate\Tests\Database\EloquentTestUser', 'friends', 'user_id', 'friend_id')->wherePivot('user_id', 2);
     }
 
     public function posts()
     {
-        return $this->hasMany('EloquentTestPost', 'user_id');
+        return $this->hasMany('Illuminate\Tests\Database\EloquentTestPost', 'user_id');
     }
 
     public function post()
     {
-        return $this->hasOne('EloquentTestPost', 'user_id');
+        return $this->hasOne('Illuminate\Tests\Database\EloquentTestPost', 'user_id');
     }
 
     public function photos()
     {
-        return $this->morphMany('EloquentTestPhoto', 'imageable');
+        return $this->morphMany('Illuminate\Tests\Database\EloquentTestPhoto', 'imageable');
+    }
+
+    public function postWithPhotos()
+    {
+        return $this->post()->join('photo', function ($join) {
+            $join->on('photo.imageable_id', 'post.id');
+            $join->where('photo.imageable_type', 'EloquentTestPost');
+        });
+    }
+}
+
+class EloquentTestUserWithCustomFriendPivot extends EloquentTestUser
+{
+    public function friends()
+    {
+        return $this->belongsToMany('Illuminate\Tests\Database\EloquentTestUser', 'friends', 'user_id', 'friend_id')
+                        ->using('Illuminate\Tests\Database\EloquentTestFriendPivot')->withPivot('user_id', 'friend_id', 'friend_level_id');
+    }
+}
+
+class EloquentTestNonIncrementing extends Eloquent
+{
+    protected $table = 'non_incrementing_users';
+    protected $guarded = [];
+    public $incrementing = false;
+    public $timestamps = false;
+}
+
+class EloquentTestUserWithGlobalScope extends EloquentTestUser
+{
+    public static function boot()
+    {
+        parent::boot();
+
+        static::addGlobalScope(function ($builder) {
+            $builder->with('posts');
+        });
+    }
+}
+
+class EloquentTestUserWithOmittingGlobalScope extends EloquentTestUser
+{
+    public static function boot()
+    {
+        parent::boot();
+
+        static::addGlobalScope(function ($builder) {
+            $builder->where('email', '!=', 'taylorotwell@gmail.com');
+        });
+    }
+}
+
+class EloquentTestUserWithGlobalScopeRemovingOtherScope extends Eloquent
+{
+    use SoftDeletes;
+
+    protected $table = 'soft_deleted_users';
+
+    protected $guarded = [];
+
+    public static function boot()
+    {
+        static::addGlobalScope(function ($builder) {
+            $builder->withoutGlobalScope(SoftDeletingScope::class);
+        });
+
+        parent::boot();
     }
 }
 
@@ -542,23 +1352,29 @@ class EloquentTestPost extends Eloquent
 
     public function user()
     {
-        return $this->belongsTo('EloquentTestUser', 'user_id');
+        return $this->belongsTo('Illuminate\Tests\Database\EloquentTestUser', 'user_id');
     }
 
     public function photos()
     {
-        return $this->morphMany('EloquentTestPhoto', 'imageable');
+        return $this->morphMany('Illuminate\Tests\Database\EloquentTestPhoto', 'imageable');
     }
 
     public function childPosts()
     {
-        return $this->hasMany('EloquentTestPost', 'parent_id');
+        return $this->hasMany('Illuminate\Tests\Database\EloquentTestPost', 'parent_id');
     }
 
     public function parentPost()
     {
-        return $this->belongsTo('EloquentTestPost', 'parent_id');
+        return $this->belongsTo('Illuminate\Tests\Database\EloquentTestPost', 'parent_id');
     }
+}
+
+class EloquentTestFriendLevel extends Eloquent
+{
+    protected $table = 'friend_levels';
+    protected $guarded = [];
 }
 
 class EloquentTestPhoto extends Eloquent
@@ -572,29 +1388,59 @@ class EloquentTestPhoto extends Eloquent
     }
 }
 
-/**
- * Connection Resolver.
- */
-class DatabaseIntegrationTestConnectionResolver implements Illuminate\Database\ConnectionResolverInterface
+class EloquentTestUserWithStringCastId extends EloquentTestUser
 {
-    protected $connection;
+    protected $casts = [
+        'id' => 'string',
+    ];
+}
 
-    public function connection($name = null)
+class EloquentTestOrder extends Eloquent
+{
+    protected $guarded = [];
+    protected $table = 'test_orders';
+    protected $with = ['item'];
+
+    public function item()
     {
-        if (isset($this->connection)) {
-            return $this->connection;
-        }
+        return $this->morphTo();
+    }
+}
 
-        return $this->connection = new Illuminate\Database\SQLiteConnection(new PDO('sqlite::memory:'));
+class EloquentTestItem extends Eloquent
+{
+    protected $guarded = [];
+    protected $table = 'test_items';
+    protected $connection = 'second_connection';
+}
+
+class EloquentTestWithJSON extends Eloquent
+{
+    protected $guarded = [];
+    protected $table = 'with_json';
+    public $timestamps = false;
+    protected $casts = [
+        'json' => 'array',
+    ];
+}
+
+class EloquentTestFriendPivot extends Pivot
+{
+    protected $table = 'friends';
+    protected $guarded = [];
+
+    public function user()
+    {
+        return $this->belongsTo(EloquentTestUser::class);
     }
 
-    public function getDefaultConnection()
+    public function friend()
     {
-        return 'default';
+        return $this->belongsTo(EloquentTestUser::class);
     }
 
-    public function setDefaultConnection($name)
+    public function level()
     {
-        //
+        return $this->belongsTo(EloquentTestFriendLevel::class, 'friend_level_id');
     }
 }

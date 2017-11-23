@@ -1,9 +1,12 @@
 <?php
 
+namespace Illuminate\Tests\Database;
+
 use Mockery as m;
+use PHPUnit\Framework\TestCase;
 use Illuminate\Database\Eloquent\Relations\MorphToMany;
 
-class DatabaseEloquentMorphToManyTest extends PHPUnit_Framework_TestCase
+class DatabaseEloquentMorphToManyTest extends TestCase
 {
     public function tearDown()
     {
@@ -24,11 +27,11 @@ class DatabaseEloquentMorphToManyTest extends PHPUnit_Framework_TestCase
 
     public function testAttachInsertsPivotTableRecord()
     {
-        $relation = $this->getMock('Illuminate\Database\Eloquent\Relations\MorphToMany', ['touchIfTouching'], $this->getRelationArguments());
+        $relation = $this->getMockBuilder('Illuminate\Database\Eloquent\Relations\MorphToMany')->setMethods(['touchIfTouching'])->setConstructorArgs($this->getRelationArguments())->getMock();
         $query = m::mock('stdClass');
         $query->shouldReceive('from')->once()->with('taggables')->andReturn($query);
         $query->shouldReceive('insert')->once()->with([['taggable_id' => 1, 'taggable_type' => get_class($relation->getParent()), 'tag_id' => 2, 'foo' => 'bar']])->andReturn(true);
-        $relation->getQuery()->shouldReceive('getQuery')->andReturn($mockQueryBuilder = m::mock('StdClass'));
+        $relation->getQuery()->shouldReceive('getQuery')->andReturn($mockQueryBuilder = m::mock('stdClass'));
         $mockQueryBuilder->shouldReceive('newQuery')->once()->andReturn($query);
         $relation->expects($this->once())->method('touchIfTouching');
 
@@ -37,14 +40,14 @@ class DatabaseEloquentMorphToManyTest extends PHPUnit_Framework_TestCase
 
     public function testDetachRemovesPivotTableRecord()
     {
-        $relation = $this->getMock('Illuminate\Database\Eloquent\Relations\MorphToMany', ['touchIfTouching'], $this->getRelationArguments());
+        $relation = $this->getMockBuilder('Illuminate\Database\Eloquent\Relations\MorphToMany')->setMethods(['touchIfTouching'])->setConstructorArgs($this->getRelationArguments())->getMock();
         $query = m::mock('stdClass');
         $query->shouldReceive('from')->once()->with('taggables')->andReturn($query);
         $query->shouldReceive('where')->once()->with('taggable_id', 1)->andReturn($query);
         $query->shouldReceive('where')->once()->with('taggable_type', get_class($relation->getParent()))->andReturn($query);
         $query->shouldReceive('whereIn')->once()->with('tag_id', [1, 2, 3]);
         $query->shouldReceive('delete')->once()->andReturn(true);
-        $relation->getQuery()->shouldReceive('getQuery')->andReturn($mockQueryBuilder = m::mock('StdClass'));
+        $relation->getQuery()->shouldReceive('getQuery')->andReturn($mockQueryBuilder = m::mock('stdClass'));
         $mockQueryBuilder->shouldReceive('newQuery')->once()->andReturn($query);
         $relation->expects($this->once())->method('touchIfTouching');
 
@@ -53,14 +56,14 @@ class DatabaseEloquentMorphToManyTest extends PHPUnit_Framework_TestCase
 
     public function testDetachMethodClearsAllPivotRecordsWhenNoIDsAreGiven()
     {
-        $relation = $this->getMock('Illuminate\Database\Eloquent\Relations\MorphToMany', ['touchIfTouching'], $this->getRelationArguments());
+        $relation = $this->getMockBuilder('Illuminate\Database\Eloquent\Relations\MorphToMany')->setMethods(['touchIfTouching'])->setConstructorArgs($this->getRelationArguments())->getMock();
         $query = m::mock('stdClass');
         $query->shouldReceive('from')->once()->with('taggables')->andReturn($query);
         $query->shouldReceive('where')->once()->with('taggable_id', 1)->andReturn($query);
         $query->shouldReceive('where')->once()->with('taggable_type', get_class($relation->getParent()))->andReturn($query);
         $query->shouldReceive('whereIn')->never();
         $query->shouldReceive('delete')->once()->andReturn(true);
-        $relation->getQuery()->shouldReceive('getQuery')->andReturn($mockQueryBuilder = m::mock('StdClass'));
+        $relation->getQuery()->shouldReceive('getQuery')->andReturn($mockQueryBuilder = m::mock('stdClass'));
         $mockQueryBuilder->shouldReceive('newQuery')->once()->andReturn($query);
         $relation->expects($this->once())->method('touchIfTouching');
 
@@ -71,7 +74,7 @@ class DatabaseEloquentMorphToManyTest extends PHPUnit_Framework_TestCase
     {
         list($builder, $parent) = $this->getRelationArguments();
 
-        return new MorphToMany($builder, $parent, 'taggable', 'taggables', 'taggable_id', 'tag_id');
+        return new MorphToMany($builder, $parent, 'taggable', 'taggables', 'taggable_id', 'tag_id', 'id', 'id');
     }
 
     public function getRelationArguments()
@@ -82,6 +85,7 @@ class DatabaseEloquentMorphToManyTest extends PHPUnit_Framework_TestCase
         $parent->shouldReceive('getCreatedAtColumn')->andReturn('created_at');
         $parent->shouldReceive('getUpdatedAtColumn')->andReturn('updated_at');
         $parent->shouldReceive('getMorphClass')->andReturn(get_class($parent));
+        $parent->shouldReceive('getAttribute')->with('id')->andReturn(1);
 
         $builder = m::mock('Illuminate\Database\Eloquent\Builder');
         $related = m::mock('Illuminate\Database\Eloquent\Model');
@@ -95,11 +99,11 @@ class DatabaseEloquentMorphToManyTest extends PHPUnit_Framework_TestCase
         $builder->shouldReceive('where')->once()->with('taggables.taggable_id', '=', 1);
         $builder->shouldReceive('where')->once()->with('taggables.taggable_type', get_class($parent));
 
-        return [$builder, $parent, 'taggable', 'taggables', 'taggable_id', 'tag_id', 'relation_name', false];
+        return [$builder, $parent, 'taggable', 'taggables', 'taggable_id', 'tag_id', 'id', 'id', 'relation_name', false];
     }
 }
 
-class EloquentMorphToManyModelStub extends Illuminate\Database\Eloquent\Model
+class EloquentMorphToManyModelStub extends \Illuminate\Database\Eloquent\Model
 {
     protected $guarded = [];
 }

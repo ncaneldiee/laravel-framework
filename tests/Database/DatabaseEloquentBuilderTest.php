@@ -1,10 +1,15 @@
 <?php
 
+namespace Illuminate\Tests\Database;
+
+use stdClass;
 use Mockery as m;
+use PHPUnit\Framework\TestCase;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Collection as BaseCollection;
 
-class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
+class DatabaseEloquentBuilderTest extends TestCase
 {
     public function tearDown()
     {
@@ -54,7 +59,7 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @expectedException Illuminate\Database\Eloquent\ModelNotFoundException
+     * @expectedException \Illuminate\Database\Eloquent\ModelNotFoundException
      */
     public function testFindOrFailMethodThrowsModelNotFoundException()
     {
@@ -66,7 +71,7 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @expectedException Illuminate\Database\Eloquent\ModelNotFoundException
+     * @expectedException \Illuminate\Database\Eloquent\ModelNotFoundException
      */
     public function testFindOrFailMethodWithManyThrowsModelNotFoundException()
     {
@@ -78,7 +83,7 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @expectedException Illuminate\Database\Eloquent\ModelNotFoundException
+     * @expectedException \Illuminate\Database\Eloquent\ModelNotFoundException
      */
     public function testFirstOrFailMethodThrowsModelNotFoundException()
     {
@@ -99,10 +104,22 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
         $this->assertEquals('baz', $result);
     }
 
+    public function testFindWithManyUsingCollection()
+    {
+        $ids = collect([1, 2]);
+        $builder = m::mock('Illuminate\Database\Eloquent\Builder[get]', [$this->getMockQueryBuilder()]);
+        $builder->getQuery()->shouldReceive('whereIn')->once()->with('foo_table.foo', $ids);
+        $builder->setModel($this->getMockModel());
+        $builder->shouldReceive('get')->with(['column'])->andReturn('baz');
+
+        $result = $builder->find($ids, ['column']);
+        $this->assertEquals('baz', $result);
+    }
+
     public function testFirstMethod()
     {
         $builder = m::mock('Illuminate\Database\Eloquent\Builder[get,take]', [$this->getMockQueryBuilder()]);
-        $builder->shouldReceive('take')->with(1)->andReturn($builder);
+        $builder->shouldReceive('take')->with(1)->andReturnSelf();
         $builder->shouldReceive('get')->with(['*'])->andReturn(new Collection(['bar']));
 
         $result = $builder->first();
@@ -112,6 +129,7 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
     public function testGetMethodLoadsModelsAndHydratesEagerRelations()
     {
         $builder = m::mock('Illuminate\Database\Eloquent\Builder[getModels,eagerLoadRelations]', [$this->getMockQueryBuilder()]);
+        $builder->shouldReceive('applyScopes')->andReturnSelf();
         $builder->shouldReceive('getModels')->with(['foo'])->andReturn(['bar']);
         $builder->shouldReceive('eagerLoadRelations')->with(['bar'])->andReturn(['bar', 'baz']);
         $builder->setModel($this->getMockModel());
@@ -124,6 +142,7 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
     public function testGetMethodDoesntHydrateEagerRelationsWhenNoResultsAreReturned()
     {
         $builder = m::mock('Illuminate\Database\Eloquent\Builder[getModels,eagerLoadRelations]', [$this->getMockQueryBuilder()]);
+        $builder->shouldReceive('applyScopes')->andReturnSelf();
         $builder->shouldReceive('getModels')->with(['foo'])->andReturn([]);
         $builder->shouldReceive('eagerLoadRelations')->never();
         $builder->setModel($this->getMockModel());
@@ -136,7 +155,7 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
     public function testValueMethodWithModelFound()
     {
         $builder = m::mock('Illuminate\Database\Eloquent\Builder[first]', [$this->getMockQueryBuilder()]);
-        $mockModel = new StdClass;
+        $mockModel = new stdClass;
         $mockModel->name = 'foo';
         $builder->shouldReceive('first')->with(['name'])->andReturn($mockModel);
 
@@ -151,73 +170,203 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
         $this->assertNull($builder->value('name'));
     }
 
-    public function testChunkExecuteCallbackOverPaginatedRequest()
+    public function testChunkWithLastChunkComplete()
     {
         $builder = m::mock('Illuminate\Database\Eloquent\Builder[forPage,get]', [$this->getMockQueryBuilder()]);
-        $builder->shouldReceive('forPage')->once()->with(1, 2)->andReturn($builder);
-        $builder->shouldReceive('forPage')->once()->with(2, 2)->andReturn($builder);
-        $builder->shouldReceive('forPage')->once()->with(3, 2)->andReturn($builder);
-        $builder->shouldReceive('get')->times(3)->andReturn(['foo1', 'foo2'], ['foo3'], []);
+        $builder->getQuery()->orders[] = ['column' => 'foobar', 'direction' => 'asc'];
 
-        $callbackExecutionAssertor = m::mock('StdClass');
-        $callbackExecutionAssertor->shouldReceive('doSomething')->with('foo1')->once();
-        $callbackExecutionAssertor->shouldReceive('doSomething')->with('foo2')->once();
-        $callbackExecutionAssertor->shouldReceive('doSomething')->with('foo3')->once();
+        $chunk1 = new Collection(['foo1', 'foo2']);
+        $chunk2 = new Collection(['foo3', 'foo4']);
+        $chunk3 = new Collection([]);
+        $builder->shouldReceive('forPage')->once()->with(1, 2)->andReturnSelf();
+        $builder->shouldReceive('forPage')->once()->with(2, 2)->andReturnSelf();
+        $builder->shouldReceive('forPage')->once()->with(3, 2)->andReturnSelf();
+        $builder->shouldReceive('get')->times(3)->andReturn($chunk1, $chunk2, $chunk3);
 
-        $builder->chunk(2, function ($results) use ($callbackExecutionAssertor) {
-            foreach ($results as $result) {
-                $callbackExecutionAssertor->doSomething($result);
-            }
+        $callbackAssertor = m::mock('stdClass');
+        $callbackAssertor->shouldReceive('doSomething')->once()->with($chunk1);
+        $callbackAssertor->shouldReceive('doSomething')->once()->with($chunk2);
+        $callbackAssertor->shouldReceive('doSomething')->never()->with($chunk3);
+
+        $builder->chunk(2, function ($results) use ($callbackAssertor) {
+            $callbackAssertor->doSomething($results);
+        });
+    }
+
+    public function testChunkWithLastChunkPartial()
+    {
+        $builder = m::mock('Illuminate\Database\Eloquent\Builder[forPage,get]', [$this->getMockQueryBuilder()]);
+        $builder->getQuery()->orders[] = ['column' => 'foobar', 'direction' => 'asc'];
+
+        $chunk1 = new Collection(['foo1', 'foo2']);
+        $chunk2 = new Collection(['foo3']);
+        $builder->shouldReceive('forPage')->once()->with(1, 2)->andReturnSelf();
+        $builder->shouldReceive('forPage')->once()->with(2, 2)->andReturnSelf();
+        $builder->shouldReceive('get')->times(2)->andReturn($chunk1, $chunk2);
+
+        $callbackAssertor = m::mock('stdClass');
+        $callbackAssertor->shouldReceive('doSomething')->once()->with($chunk1);
+        $callbackAssertor->shouldReceive('doSomething')->once()->with($chunk2);
+
+        $builder->chunk(2, function ($results) use ($callbackAssertor) {
+            $callbackAssertor->doSomething($results);
         });
     }
 
     public function testChunkCanBeStoppedByReturningFalse()
     {
         $builder = m::mock('Illuminate\Database\Eloquent\Builder[forPage,get]', [$this->getMockQueryBuilder()]);
-        $builder->shouldReceive('forPage')->once()->with(1, 2)->andReturn($builder);
+        $builder->getQuery()->orders[] = ['column' => 'foobar', 'direction' => 'asc'];
+
+        $chunk1 = new Collection(['foo1', 'foo2']);
+        $chunk2 = new Collection(['foo3']);
+        $builder->shouldReceive('forPage')->once()->with(1, 2)->andReturnSelf();
         $builder->shouldReceive('forPage')->never()->with(2, 2);
-        $builder->shouldReceive('get')->times(1)->andReturn(['foo1', 'foo2']);
+        $builder->shouldReceive('get')->times(1)->andReturn($chunk1);
 
-        $callbackExecutionAssertor = m::mock('StdClass');
-        $callbackExecutionAssertor->shouldReceive('doSomething')->with('foo1')->once();
-        $callbackExecutionAssertor->shouldReceive('doSomething')->with('foo2')->once();
-        $callbackExecutionAssertor->shouldReceive('doSomething')->with('foo3')->never();
+        $callbackAssertor = m::mock('stdClass');
+        $callbackAssertor->shouldReceive('doSomething')->once()->with($chunk1);
+        $callbackAssertor->shouldReceive('doSomething')->never()->with($chunk2);
 
-        $builder->chunk(2, function ($results) use ($callbackExecutionAssertor) {
-            foreach ($results as $result) {
-                $callbackExecutionAssertor->doSomething($result);
-            }
+        $builder->chunk(2, function ($results) use ($callbackAssertor) {
+            $callbackAssertor->doSomething($results);
 
             return false;
         });
     }
 
-    public function testListsReturnsTheMutatedAttributesOfAModel()
+    public function testChunkWithCountZero()
+    {
+        $builder = m::mock('Illuminate\Database\Eloquent\Builder[forPage,get]', [$this->getMockQueryBuilder()]);
+        $builder->getQuery()->orders[] = ['column' => 'foobar', 'direction' => 'asc'];
+
+        $chunk = new Collection([]);
+        $builder->shouldReceive('forPage')->once()->with(1, 0)->andReturnSelf();
+        $builder->shouldReceive('get')->times(1)->andReturn($chunk);
+
+        $callbackAssertor = m::mock('stdClass');
+        $callbackAssertor->shouldReceive('doSomething')->never();
+
+        $builder->chunk(0, function ($results) use ($callbackAssertor) {
+            $callbackAssertor->doSomething($results);
+        });
+    }
+
+    public function testChunkPaginatesUsingIdWithLastChunkComplete()
+    {
+        $builder = m::mock('Illuminate\Database\Eloquent\Builder[forPageAfterId,get]', [$this->getMockQueryBuilder()]);
+        $builder->getQuery()->orders[] = ['column' => 'foobar', 'direction' => 'asc'];
+
+        $chunk1 = new Collection([(object) ['someIdField' => 1], (object) ['someIdField' => 2]]);
+        $chunk2 = new Collection([(object) ['someIdField' => 10], (object) ['someIdField' => 11]]);
+        $chunk3 = new Collection([]);
+        $builder->shouldReceive('forPageAfterId')->once()->with(2, 0, 'someIdField')->andReturnSelf();
+        $builder->shouldReceive('forPageAfterId')->once()->with(2, 2, 'someIdField')->andReturnSelf();
+        $builder->shouldReceive('forPageAfterId')->once()->with(2, 11, 'someIdField')->andReturnSelf();
+        $builder->shouldReceive('get')->times(3)->andReturn($chunk1, $chunk2, $chunk3);
+
+        $callbackAssertor = m::mock('stdClass');
+        $callbackAssertor->shouldReceive('doSomething')->once()->with($chunk1);
+        $callbackAssertor->shouldReceive('doSomething')->once()->with($chunk2);
+        $callbackAssertor->shouldReceive('doSomething')->never()->with($chunk3);
+
+        $builder->chunkById(2, function ($results) use ($callbackAssertor) {
+            $callbackAssertor->doSomething($results);
+        }, 'someIdField');
+    }
+
+    public function testChunkPaginatesUsingIdWithLastChunkPartial()
+    {
+        $builder = m::mock('Illuminate\Database\Eloquent\Builder[forPageAfterId,get]', [$this->getMockQueryBuilder()]);
+        $builder->getQuery()->orders[] = ['column' => 'foobar', 'direction' => 'asc'];
+
+        $chunk1 = new Collection([(object) ['someIdField' => 1], (object) ['someIdField' => 2]]);
+        $chunk2 = new Collection([(object) ['someIdField' => 10]]);
+        $builder->shouldReceive('forPageAfterId')->once()->with(2, 0, 'someIdField')->andReturnSelf();
+        $builder->shouldReceive('forPageAfterId')->once()->with(2, 2, 'someIdField')->andReturnSelf();
+        $builder->shouldReceive('get')->times(2)->andReturn($chunk1, $chunk2);
+
+        $callbackAssertor = m::mock('stdClass');
+        $callbackAssertor->shouldReceive('doSomething')->once()->with($chunk1);
+        $callbackAssertor->shouldReceive('doSomething')->once()->with($chunk2);
+
+        $builder->chunkById(2, function ($results) use ($callbackAssertor) {
+            $callbackAssertor->doSomething($results);
+        }, 'someIdField');
+    }
+
+    public function testChunkPaginatesUsingIdWithCountZero()
+    {
+        $builder = m::mock('Illuminate\Database\Eloquent\Builder[forPageAfterId,get]', [$this->getMockQueryBuilder()]);
+        $builder->getQuery()->orders[] = ['column' => 'foobar', 'direction' => 'asc'];
+
+        $chunk = new Collection([]);
+        $builder->shouldReceive('forPageAfterId')->once()->with(0, 0, 'someIdField')->andReturnSelf();
+        $builder->shouldReceive('get')->times(1)->andReturn($chunk);
+
+        $callbackAssertor = m::mock('stdClass');
+        $callbackAssertor->shouldReceive('doSomething')->never();
+
+        $builder->chunkById(0, function ($results) use ($callbackAssertor) {
+            $callbackAssertor->doSomething($results);
+        }, 'someIdField');
+    }
+
+    public function testPluckReturnsTheMutatedAttributesOfAModel()
     {
         $builder = $this->getBuilder();
-        $builder->getQuery()->shouldReceive('lists')->with('name', '')->andReturn(['bar', 'baz']);
+        $builder->getQuery()->shouldReceive('pluck')->with('name', '')->andReturn(new BaseCollection(['bar', 'baz']));
         $builder->setModel($this->getMockModel());
         $builder->getModel()->shouldReceive('hasGetMutator')->with('name')->andReturn(true);
-        $builder->getModel()->shouldReceive('newFromBuilder')->with(['name' => 'bar'])->andReturn(new EloquentBuilderTestListsStub(['name' => 'bar']));
-        $builder->getModel()->shouldReceive('newFromBuilder')->with(['name' => 'baz'])->andReturn(new EloquentBuilderTestListsStub(['name' => 'baz']));
+        $builder->getModel()->shouldReceive('newFromBuilder')->with(['name' => 'bar'])->andReturn(new EloquentBuilderTestPluckStub(['name' => 'bar']));
+        $builder->getModel()->shouldReceive('newFromBuilder')->with(['name' => 'baz'])->andReturn(new EloquentBuilderTestPluckStub(['name' => 'baz']));
 
-        $this->assertEquals(['foo_bar', 'foo_baz'], $builder->lists('name')->all());
+        $this->assertEquals(['foo_bar', 'foo_baz'], $builder->pluck('name')->all());
     }
 
-    public function testListsWithoutModelGetterJustReturnTheAttributesFoundInDatabase()
+    public function testPluckReturnsTheCastedAttributesOfAModel()
     {
         $builder = $this->getBuilder();
-        $builder->getQuery()->shouldReceive('lists')->with('name', '')->andReturn(['bar', 'baz']);
+        $builder->getQuery()->shouldReceive('pluck')->with('name', '')->andReturn(new BaseCollection(['bar', 'baz']));
         $builder->setModel($this->getMockModel());
         $builder->getModel()->shouldReceive('hasGetMutator')->with('name')->andReturn(false);
+        $builder->getModel()->shouldReceive('hasCast')->with('name')->andReturn(true);
+        $builder->getModel()->shouldReceive('newFromBuilder')->with(['name' => 'bar'])->andReturn(new EloquentBuilderTestPluckStub(['name' => 'bar']));
+        $builder->getModel()->shouldReceive('newFromBuilder')->with(['name' => 'baz'])->andReturn(new EloquentBuilderTestPluckStub(['name' => 'baz']));
 
-        $this->assertEquals(['bar', 'baz'], $builder->lists('name')->all());
+        $this->assertEquals(['foo_bar', 'foo_baz'], $builder->pluck('name')->all());
     }
 
-    public function testMacrosAreCalledOnBuilder()
+    public function testPluckReturnsTheDateAttributesOfAModel()
+    {
+        $builder = $this->getBuilder();
+        $builder->getQuery()->shouldReceive('pluck')->with('created_at', '')->andReturn(new BaseCollection(['2010-01-01 00:00:00', '2011-01-01 00:00:00']));
+        $builder->setModel($this->getMockModel());
+        $builder->getModel()->shouldReceive('hasGetMutator')->with('created_at')->andReturn(false);
+        $builder->getModel()->shouldReceive('hasCast')->with('created_at')->andReturn(false);
+        $builder->getModel()->shouldReceive('getDates')->andReturn(['created_at']);
+        $builder->getModel()->shouldReceive('newFromBuilder')->with(['created_at' => '2010-01-01 00:00:00'])->andReturn(new EloquentBuilderTestPluckDatesStub(['created_at' => '2010-01-01 00:00:00']));
+        $builder->getModel()->shouldReceive('newFromBuilder')->with(['created_at' => '2011-01-01 00:00:00'])->andReturn(new EloquentBuilderTestPluckDatesStub(['created_at' => '2011-01-01 00:00:00']));
+
+        $this->assertEquals(['date_2010-01-01 00:00:00', 'date_2011-01-01 00:00:00'], $builder->pluck('created_at')->all());
+    }
+
+    public function testPluckWithoutModelGetterJustReturnTheAttributesFoundInDatabase()
+    {
+        $builder = $this->getBuilder();
+        $builder->getQuery()->shouldReceive('pluck')->with('name', '')->andReturn(new BaseCollection(['bar', 'baz']));
+        $builder->setModel($this->getMockModel());
+        $builder->getModel()->shouldReceive('hasGetMutator')->with('name')->andReturn(false);
+        $builder->getModel()->shouldReceive('hasCast')->with('name')->andReturn(false);
+        $builder->getModel()->shouldReceive('getDates')->andReturn(['created_at']);
+
+        $this->assertEquals(['bar', 'baz'], $builder->pluck('name')->all());
+    }
+
+    public function testLocalMacrosAreCalledOnBuilder()
     {
         unset($_SERVER['__test.builder']);
-        $builder = new Illuminate\Database\Eloquent\Builder(new Illuminate\Database\Query\Builder(
+        $builder = new \Illuminate\Database\Eloquent\Builder(new \Illuminate\Database\Query\Builder(
             m::mock('Illuminate\Database\ConnectionInterface'),
             m::mock('Illuminate\Database\Query\Grammars\Grammar'),
             m::mock('Illuminate\Database\Query\Processors\Processor')
@@ -234,17 +383,30 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
         unset($_SERVER['__test.builder']);
     }
 
+    public function testGlobalMacrosAreCalledOnBuilder()
+    {
+        Builder::macro('foo', function ($bar) {
+            return $bar;
+        });
+
+        Builder::macro('bam', [Builder::class, 'getQuery']);
+
+        $builder = $this->getBuilder();
+
+        $this->assertEquals($builder->foo('bar'), 'bar');
+        $this->assertEquals($builder->bam(), $builder->getQuery());
+    }
+
     public function testGetModelsProperlyHydratesModels()
     {
         $builder = m::mock('Illuminate\Database\Eloquent\Builder[get]', [$this->getMockQueryBuilder()]);
         $records[] = ['name' => 'taylor', 'age' => 26];
         $records[] = ['name' => 'dayle', 'age' => 28];
-        $builder->getQuery()->shouldReceive('get')->once()->with(['foo'])->andReturn($records);
-        $model = m::mock('Illuminate\Database\Eloquent\Model[getTable,getConnectionName,hydrate]');
+        $builder->getQuery()->shouldReceive('get')->once()->with(['foo'])->andReturn(new BaseCollection($records));
+        $model = m::mock('Illuminate\Database\Eloquent\Model[getTable,hydrate]');
         $model->shouldReceive('getTable')->once()->andReturn('foo_table');
         $builder->setModel($model);
-        $model->shouldReceive('getConnectionName')->once()->andReturn('foo_connection');
-        $model->shouldReceive('hydrate')->once()->with($records, 'foo_connection')->andReturn(new Collection(['hydrated']));
+        $model->shouldReceive('hydrate')->once()->with($records)->andReturn(new Collection(['hydrated']));
         $models = $builder->getModels(['foo']);
 
         $this->assertEquals($models, ['hydrated']);
@@ -252,11 +414,13 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
 
     public function testEagerLoadRelationsLoadTopLevelRelationships()
     {
-        $builder = m::mock('Illuminate\Database\Eloquent\Builder[loadRelation]', [$this->getMockQueryBuilder()]);
-        $nop1 = function () {};
-        $nop2 = function () {};
+        $builder = m::mock('Illuminate\Database\Eloquent\Builder[eagerLoadRelation]', [$this->getMockQueryBuilder()]);
+        $nop1 = function () {
+        };
+        $nop2 = function () {
+        };
         $builder->setEagerLoads(['foo' => $nop1, 'foo.bar' => $nop2]);
-        $builder->shouldAllowMockingProtectedMethods()->shouldReceive('loadRelation')->with(['models'], 'foo', $nop1)->andReturn(['foo']);
+        $builder->shouldAllowMockingProtectedMethods()->shouldReceive('eagerLoadRelation')->with(['models'], 'foo', $nop1)->andReturn(['foo']);
 
         $results = $builder->eagerLoadRelations(['models']);
         $this->assertEquals(['foo'], $results);
@@ -265,7 +429,9 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
     public function testRelationshipEagerLoadProcess()
     {
         $builder = m::mock('Illuminate\Database\Eloquent\Builder[getRelation]', [$this->getMockQueryBuilder()]);
-        $builder->setEagerLoads(['orders' => function ($query) { $_SERVER['__eloquent.constrain'] = $query; }]);
+        $builder->setEagerLoads(['orders' => function ($query) {
+            $_SERVER['__eloquent.constrain'] = $query;
+        }]);
         $relation = m::mock('stdClass');
         $relation->shouldReceive('addEagerConstraints')->once()->with(['models']);
         $relation->shouldReceive('initRelation')->once()->with(['models'], 'orders')->andReturn(['models']);
@@ -312,6 +478,17 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
         $relation = $builder->getRelation('ordersGroups');
     }
 
+    /**
+     * @expectedException \Illuminate\Database\Eloquent\RelationNotFoundException
+     */
+    public function testGetRelationThrowsException()
+    {
+        $builder = $this->getBuilder();
+        $builder->setModel($this->getMockModel());
+
+        $builder->getRelation('invalid');
+    }
+
     public function testEagerLoadParsingSetsProperRelationships()
     {
         $builder = $this->getBuilder();
@@ -339,13 +516,17 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
         $this->assertInstanceOf('Closure', $eagers['orders.lines']);
 
         $builder = $this->getBuilder();
-        $builder->with(['orders' => function () { return 'foo'; }]);
+        $builder->with(['orders' => function () {
+            return 'foo';
+        }]);
         $eagers = $builder->getEagerLoads();
 
         $this->assertEquals('foo', $eagers['orders']());
 
         $builder = $this->getBuilder();
-        $builder->with(['orders.lines' => function () { return 'foo'; }]);
+        $builder->with(['orders.lines' => function () {
+            return 'foo';
+        }]);
         $eagers = $builder->getEagerLoads();
 
         $this->assertInstanceOf('Closure', $eagers['orders']);
@@ -390,7 +571,9 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
         $builder->getQuery()->shouldReceive('addNestedWhereQuery')->once()->with($nestedRawQuery, 'and');
         $nestedQuery->shouldReceive('foo')->once();
 
-        $result = $builder->where(function ($query) { $query->foo(); });
+        $result = $builder->where(function ($query) {
+            $query->foo();
+        });
         $this->assertEquals($builder, $result);
     }
 
@@ -398,8 +581,21 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
     {
         $model = new EloquentBuilderTestNestedStub;
         $this->mockConnectionForModel($model, 'SQLite');
-        $query = $model->newQuery()->where('foo', '=', 'bar')->where(function ($query) { $query->where('baz', '>', 9000); });
-        $this->assertEquals('select * from "table" where "table"."deleted_at" is null and "foo" = ? and ("baz" > ?)', $query->toSql());
+        $query = $model->newQuery()->where('foo', '=', 'bar')->where(function ($query) {
+            $query->where('baz', '>', 9000);
+        });
+        $this->assertEquals('select * from "table" where "foo" = ? and ("baz" > ?) and "table"."deleted_at" is null', $query->toSql());
+        $this->assertEquals(['bar', 9000], $query->getBindings());
+    }
+
+    public function testRealNestedWhereWithMultipleScopesAndOneDeadScope()
+    {
+        $model = new EloquentBuilderTestNestedStub;
+        $this->mockConnectionForModel($model, 'SQLite');
+        $query = $model->newQuery()->empty()->where('foo', '=', 'bar')->empty()->where(function ($query) {
+            $query->empty()->where('baz', '>', 9000);
+        });
+        $this->assertEquals('select * from "table" where "foo" = ? and ("baz" > ?) and "table"."deleted_at" is null', $query->toSql());
         $this->assertEquals(['bar', 9000], $query->getBindings());
     }
 
@@ -411,6 +607,14 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
         $this->assertEquals($result, $builder);
     }
 
+    public function testPostgresOperatorsWhere()
+    {
+        $builder = $this->getBuilder();
+        $builder->getQuery()->shouldReceive('where')->once()->with('foo', '@>', 'bar');
+        $result = $builder->where('foo', '@>', 'bar');
+        $this->assertEquals($result, $builder);
+    }
+
     public function testDeleteOverride()
     {
         $builder = $this->getBuilder();
@@ -418,6 +622,139 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
             return ['foo' => $builder];
         });
         $this->assertEquals(['foo' => $builder], $builder->delete());
+    }
+
+    public function testWithCount()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->withCount('foo');
+
+        $this->assertEquals('select "eloquent_builder_test_model_parent_stubs".*, (select count(*) from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id") as "foo_count" from "eloquent_builder_test_model_parent_stubs"', $builder->toSql());
+    }
+
+    public function testWithCountAndSelect()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->select('id')->withCount('foo');
+
+        $this->assertEquals('select "id", (select count(*) from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id") as "foo_count" from "eloquent_builder_test_model_parent_stubs"', $builder->toSql());
+    }
+
+    public function testWithCountAndMergedWheres()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->select('id')->withCount(['activeFoo' => function ($q) {
+            $q->where('bam', '>', 'qux');
+        }]);
+
+        $this->assertEquals('select "id", (select count(*) from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id" and "bam" > ? and "active" = ?) as "active_foo_count" from "eloquent_builder_test_model_parent_stubs"', $builder->toSql());
+        $this->assertEquals(['qux', true], $builder->getBindings());
+    }
+
+    public function testWithCountAndGlobalScope()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+        EloquentBuilderTestModelCloseRelatedStub::addGlobalScope('withCount', function ($query) {
+            return $query->addSelect('id');
+        });
+
+        $builder = $model->select('id')->withCount(['foo']);
+
+        // Remove the global scope so it doesn't interfere with any other tests
+        EloquentBuilderTestModelCloseRelatedStub::addGlobalScope('withCount', function ($query) {
+        });
+
+        $this->assertEquals('select "id", (select count(*) from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id") as "foo_count" from "eloquent_builder_test_model_parent_stubs"', $builder->toSql());
+    }
+
+    public function testWithCountAndConstraintsAndHaving()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->where('bar', 'baz');
+        $builder->withCount(['foo' => function ($q) {
+            $q->where('bam', '>', 'qux');
+        }])->having('foo_count', '>=', 1);
+
+        $this->assertEquals('select "eloquent_builder_test_model_parent_stubs".*, (select count(*) from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id" and "bam" > ?) as "foo_count" from "eloquent_builder_test_model_parent_stubs" where "bar" = ? having "foo_count" >= ?', $builder->toSql());
+        $this->assertEquals(['qux', 'baz', 1], $builder->getBindings());
+    }
+
+    public function testWithCountAndRename()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->withCount('foo as foo_bar');
+
+        $this->assertEquals('select "eloquent_builder_test_model_parent_stubs".*, (select count(*) from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id") as "foo_bar" from "eloquent_builder_test_model_parent_stubs"', $builder->toSql());
+    }
+
+    public function testWithCountMultipleAndPartialRename()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->withCount(['foo as foo_bar', 'foo']);
+
+        $this->assertEquals('select "eloquent_builder_test_model_parent_stubs".*, (select count(*) from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id") as "foo_bar", (select count(*) from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id") as "foo_count" from "eloquent_builder_test_model_parent_stubs"', $builder->toSql());
+    }
+
+    public function testHasWithConstraintsAndHavingInSubquery()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->where('bar', 'baz');
+        $builder->whereHas('foo', function ($q) {
+            $q->having('bam', '>', 'qux');
+        })->where('quux', 'quuux');
+
+        $this->assertEquals('select * from "eloquent_builder_test_model_parent_stubs" where "bar" = ? and exists (select * from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id" having "bam" > ?) and "quux" = ?', $builder->toSql());
+        $this->assertEquals(['baz', 'qux', 'quuux'], $builder->getBindings());
+    }
+
+    public function testHasWithConstraintsWithOrWhereAndHavingInSubquery()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->where('name', 'larry');
+        $builder->whereHas('address', function ($q) {
+            $q->where('zipcode', '90210');
+            $q->orWhere('zipcode', '90220');
+            $q->having('street', '=', 'fooside dr');
+        })->where('age', 29);
+
+        $this->assertEquals('select * from "eloquent_builder_test_model_parent_stubs" where "name" = ? and exists (select * from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id" and ("zipcode" = ? or "zipcode" = ?) having "street" = ?) and "age" = ?', $builder->toSql());
+        $this->assertEquals(['larry', '90210', '90220', 'fooside dr', 29], $builder->getBindings());
+    }
+
+    public function testHasWithContraintsAndJoinAndHavingInSubquery()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+        $builder = $model->where('bar', 'baz');
+        $builder->whereHas('foo', function ($q) {
+            $q->join('quuuux', function ($j) {
+                $j->where('quuuuux', '=', 'quuuuuux');
+            });
+            $q->having('bam', '>', 'qux');
+        })->where('quux', 'quuux');
+
+        $this->assertEquals('select * from "eloquent_builder_test_model_parent_stubs" where "bar" = ? and exists (select * from "eloquent_builder_test_model_close_related_stubs" inner join "quuuux" on "quuuuux" = ? where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id" having "bam" > ?) and "quux" = ?', $builder->toSql());
+        $this->assertEquals(['baz', 'quuuuuux', 'qux', 'quuux'], $builder->getBindings());
+    }
+
+    public function testHasWithConstraintsAndHavingInSubqueryWithCount()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->where('bar', 'baz');
+        $builder->whereHas('foo', function ($q) {
+            $q->having('bam', '>', 'qux');
+        }, '>=', 2)->where('quux', 'quuux');
+
+        $this->assertEquals('select * from "eloquent_builder_test_model_parent_stubs" where "bar" = ? and (select count(*) from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id" having "bam" > ?) >= 2 and "quux" = ?', $builder->toSql());
+        $this->assertEquals(['baz', 'qux', 'quuux'], $builder->getBindings());
     }
 
     public function testHasNestedWithConstraints()
@@ -465,6 +802,162 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
         $this->assertEquals($builder->toSql(), $result);
     }
 
+    public function testSelfHasNested()
+    {
+        $model = new EloquentBuilderTestModelSelfRelatedStub;
+
+        $nestedSql = $model->whereHas('parentFoo', function ($q) {
+            $q->has('childFoo');
+        })->toSql();
+
+        $dotSql = $model->has('parentFoo.childFoo')->toSql();
+
+        // alias has a dynamic hash, so replace with a static string for comparison
+        $alias = 'self_alias_hash';
+        $aliasRegex = '/\b(laravel_reserved_\d)(\b|$)/i';
+
+        $nestedSql = preg_replace($aliasRegex, $alias, $nestedSql);
+        $dotSql = preg_replace($aliasRegex, $alias, $dotSql);
+
+        $this->assertEquals($nestedSql, $dotSql);
+    }
+
+    public function testSelfHasNestedUsesAlias()
+    {
+        $model = new EloquentBuilderTestModelSelfRelatedStub;
+
+        $sql = $model->has('parentFoo.childFoo')->toSql();
+
+        // alias has a dynamic hash, so replace with a static string for comparison
+        $alias = 'self_alias_hash';
+        $aliasRegex = '/\b(laravel_reserved_\d)(\b|$)/i';
+
+        $sql = preg_replace($aliasRegex, $alias, $sql);
+
+        $this->assertContains('"self_alias_hash"."id" = "self_related_stubs"."parent_id"', $sql);
+    }
+
+    public function testDoesntHave()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->doesntHave('foo');
+
+        $this->assertEquals('select * from "eloquent_builder_test_model_parent_stubs" where not exists (select * from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id")', $builder->toSql());
+    }
+
+    public function testOrDoesntHave()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->where('bar', 'baz')->orDoesntHave('foo');
+
+        $this->assertEquals('select * from "eloquent_builder_test_model_parent_stubs" where "bar" = ? or not exists (select * from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id")', $builder->toSql());
+        $this->assertEquals(['baz'], $builder->getBindings());
+    }
+
+    public function testWhereDoesntHave()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->whereDoesntHave('foo', function ($query) {
+            $query->where('bar', 'baz');
+        });
+
+        $this->assertEquals('select * from "eloquent_builder_test_model_parent_stubs" where not exists (select * from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id" and "bar" = ?)', $builder->toSql());
+        $this->assertEquals(['baz'], $builder->getBindings());
+    }
+
+    public function testOrWhereDoesntHave()
+    {
+        $model = new EloquentBuilderTestModelParentStub;
+
+        $builder = $model->where('bar', 'baz')->orWhereDoesntHave('foo', function ($query) {
+            $query->where('qux', 'quux');
+        });
+
+        $this->assertEquals('select * from "eloquent_builder_test_model_parent_stubs" where "bar" = ? or not exists (select * from "eloquent_builder_test_model_close_related_stubs" where "eloquent_builder_test_model_parent_stubs"."foo_id" = "eloquent_builder_test_model_close_related_stubs"."id" and "qux" = ?)', $builder->toSql());
+        $this->assertEquals(['baz', 'quux'], $builder->getBindings());
+    }
+
+    public function testWhereKeyMethodWithInt()
+    {
+        $model = $this->getMockModel();
+        $builder = $this->getBuilder()->setModel($model);
+        $keyName = $model->getQualifiedKeyName();
+
+        $int = 1;
+
+        $builder->getQuery()->shouldReceive('where')->once()->with($keyName, '=', $int);
+
+        $builder->whereKey($int);
+    }
+
+    public function testWhereKeyMethodWithArray()
+    {
+        $model = $this->getMockModel();
+        $builder = $this->getBuilder()->setModel($model);
+        $keyName = $model->getQualifiedKeyName();
+
+        $array = [1, 2, 3];
+
+        $builder->getQuery()->shouldReceive('whereIn')->once()->with($keyName, $array);
+
+        $builder->whereKey($array);
+    }
+
+    public function testWhereKeyMethodWithCollection()
+    {
+        $model = $this->getMockModel();
+        $builder = $this->getBuilder()->setModel($model);
+        $keyName = $model->getQualifiedKeyName();
+
+        $collection = new Collection([1, 2, 3]);
+
+        $builder->getQuery()->shouldReceive('whereIn')->once()->with($keyName, $collection);
+
+        $builder->whereKey($collection);
+    }
+
+    public function testWhereKeyNotMethodWithInt()
+    {
+        $model = $this->getMockModel();
+        $builder = $this->getBuilder()->setModel($model);
+        $keyName = $model->getQualifiedKeyName();
+
+        $int = 1;
+
+        $builder->getQuery()->shouldReceive('where')->once()->with($keyName, '!=', $int);
+
+        $builder->whereKeyNot($int);
+    }
+
+    public function testWhereKeyNotMethodWithArray()
+    {
+        $model = $this->getMockModel();
+        $builder = $this->getBuilder()->setModel($model);
+        $keyName = $model->getQualifiedKeyName();
+
+        $array = [1, 2, 3];
+
+        $builder->getQuery()->shouldReceive('whereNotIn')->once()->with($keyName, $array);
+
+        $builder->whereKeyNot($array);
+    }
+
+    public function testWhereKeyNotMethodWithCollection()
+    {
+        $model = $this->getMockModel();
+        $builder = $this->getBuilder()->setModel($model);
+        $keyName = $model->getQualifiedKeyName();
+
+        $collection = new Collection([1, 2, 3]);
+
+        $builder->getQuery()->shouldReceive('whereNotIn')->once()->with($keyName, $collection);
+
+        $builder->whereKeyNot($collection);
+    }
+
     protected function mockConnectionForModel($model, $database)
     {
         $grammarClass = 'Illuminate\Database\Query\Grammars\\'.$database.'Grammar';
@@ -501,7 +994,7 @@ class DatabaseEloquentBuilderTest extends PHPUnit_Framework_TestCase
     }
 }
 
-class EloquentBuilderTestScopeStub extends Illuminate\Database\Eloquent\Model
+class EloquentBuilderTestScopeStub extends \Illuminate\Database\Eloquent\Model
 {
     public function scopeApproved($query)
     {
@@ -509,13 +1002,18 @@ class EloquentBuilderTestScopeStub extends Illuminate\Database\Eloquent\Model
     }
 }
 
-class EloquentBuilderTestNestedStub extends Illuminate\Database\Eloquent\Model
+class EloquentBuilderTestNestedStub extends \Illuminate\Database\Eloquent\Model
 {
     protected $table = 'table';
-    use Illuminate\Database\Eloquent\SoftDeletes;
+    use \Illuminate\Database\Eloquent\SoftDeletes;
+
+    public function scopeEmpty($query)
+    {
+        return $query;
+    }
 }
 
-class EloquentBuilderTestListsStub
+class EloquentBuilderTestPluckStub
 {
     protected $attributes;
 
@@ -530,27 +1028,87 @@ class EloquentBuilderTestListsStub
     }
 }
 
-class EloquentBuilderTestModelParentStub extends Illuminate\Database\Eloquent\Model
+class EloquentBuilderTestPluckDatesStub extends \Illuminate\Database\Eloquent\Model
 {
-    public function foo()
+    protected $attributes;
+
+    public function __construct($attributes)
     {
-        return $this->belongsTo('EloquentBuilderTestModelCloseRelatedStub');
+        $this->attributes = $attributes;
+    }
+
+    protected function asDateTime($value)
+    {
+        return 'date_'.$value;
     }
 }
 
-class EloquentBuilderTestModelCloseRelatedStub extends Illuminate\Database\Eloquent\Model
+class EloquentBuilderTestModelParentStub extends \Illuminate\Database\Eloquent\Model
+{
+    public function foo()
+    {
+        return $this->belongsTo('Illuminate\Tests\Database\EloquentBuilderTestModelCloseRelatedStub');
+    }
+
+    public function address()
+    {
+        return $this->belongsTo('Illuminate\Tests\Database\EloquentBuilderTestModelCloseRelatedStub', 'foo_id');
+    }
+
+    public function activeFoo()
+    {
+        return $this->belongsTo('Illuminate\Tests\Database\EloquentBuilderTestModelCloseRelatedStub', 'foo_id')->where('active', true);
+    }
+}
+
+class EloquentBuilderTestModelCloseRelatedStub extends \Illuminate\Database\Eloquent\Model
 {
     public function bar()
     {
-        return $this->hasMany('EloquentBuilderTestModelFarRelatedStub');
+        return $this->hasMany('Illuminate\Tests\Database\EloquentBuilderTestModelFarRelatedStub');
     }
 
     public function baz()
     {
-        return $this->hasMany('EloquentBuilderTestModelFarRelatedStub');
+        return $this->hasMany('Illuminate\Tests\Database\EloquentBuilderTestModelFarRelatedStub');
     }
 }
 
-class EloquentBuilderTestModelFarRelatedStub extends Illuminate\Database\Eloquent\Model
+class EloquentBuilderTestModelFarRelatedStub extends \Illuminate\Database\Eloquent\Model
 {
+}
+
+class EloquentBuilderTestModelSelfRelatedStub extends \Illuminate\Database\Eloquent\Model
+{
+    protected $table = 'self_related_stubs';
+
+    public function parentFoo()
+    {
+        return $this->belongsTo('Illuminate\Tests\Database\EloquentBuilderTestModelSelfRelatedStub', 'parent_id', 'id', 'parent');
+    }
+
+    public function childFoo()
+    {
+        return $this->hasOne('Illuminate\Tests\Database\EloquentBuilderTestModelSelfRelatedStub', 'parent_id', 'id');
+    }
+
+    public function childFoos()
+    {
+        return $this->hasMany('Illuminate\Tests\Database\EloquentBuilderTestModelSelfRelatedStub', 'parent_id', 'id', 'children');
+    }
+
+    public function parentBars()
+    {
+        return $this->belongsToMany('Illuminate\Tests\Database\EloquentBuilderTestModelSelfRelatedStub', 'self_pivot', 'child_id', 'parent_id', 'parent_bars');
+    }
+
+    public function childBars()
+    {
+        return $this->belongsToMany('Illuminate\Tests\Database\EloquentBuilderTestModelSelfRelatedStub', 'self_pivot', 'parent_id', 'child_id', 'child_bars');
+    }
+
+    public function bazes()
+    {
+        return $this->hasMany('Illuminate\Tests\Database\EloquentBuilderTestModelFarRelatedStub', 'foreign_key', 'id', 'bar');
+    }
 }

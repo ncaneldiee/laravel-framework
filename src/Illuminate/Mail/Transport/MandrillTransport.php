@@ -2,7 +2,7 @@
 
 namespace Illuminate\Mail\Transport;
 
-use Swift_Mime_Message;
+use Swift_Mime_SimpleMessage;
 use GuzzleHttp\ClientInterface;
 
 class MandrillTransport extends Transport
@@ -30,25 +30,29 @@ class MandrillTransport extends Transport
      */
     public function __construct(ClientInterface $client, $key)
     {
-        $this->client = $client;
         $this->key = $key;
+        $this->client = $client;
     }
 
     /**
      * {@inheritdoc}
      */
-    public function send(Swift_Mime_Message $message, &$failedRecipients = null)
+    public function send(Swift_Mime_SimpleMessage $message, &$failedRecipients = null)
     {
         $this->beforeSendPerformed($message);
 
-        $data = [
-            'key' => $this->key,
-            'to' => $this->getToAddresses($message),
-            'raw_message' => (string) $message,
-            'async' => false,
-        ];
+        $this->client->post('https://mandrillapp.com/api/1.0/messages/send-raw.json', [
+            'form_params' => [
+                'key' => $this->key,
+                'to' => $this->getTo($message),
+                'raw_message' => $message->toString(),
+                'async' => true,
+            ],
+        ]);
 
-        return $this->client->post('https://mandrillapp.com/api/1.0/messages/send-raw.json', ['form_params' => $data]);
+        $this->sendPerformed($message);
+
+        return $this->numberOfRecipients($message);
     }
 
     /**
@@ -56,10 +60,10 @@ class MandrillTransport extends Transport
      *
      * Note that Mandrill still respects CC, BCC headers in raw message itself.
      *
-     * @param  \Swift_Mime_Message $message
+     * @param  \Swift_Mime_SimpleMessage $message
      * @return array
      */
-    protected function getToAddresses(Swift_Mime_Message $message)
+    protected function getTo(Swift_Mime_SimpleMessage $message)
     {
         $to = [];
 
@@ -92,7 +96,7 @@ class MandrillTransport extends Transport
      * Set the API key being used by the transport.
      *
      * @param  string  $key
-     * @return void
+     * @return string
      */
     public function setKey($key)
     {

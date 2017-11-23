@@ -1,10 +1,13 @@
 <?php
 
+namespace Illuminate\Tests\Http;
+
 use Mockery as m;
 use Illuminate\Http\Request;
+use PHPUnit\Framework\TestCase;
 use Illuminate\Http\RedirectResponse;
 
-class HttpRedirectResponseTest extends PHPUnit_Framework_TestCase
+class HttpRedirectResponseTest extends TestCase
 {
     public function tearDown()
     {
@@ -35,10 +38,10 @@ class HttpRedirectResponseTest extends PHPUnit_Framework_TestCase
     public function testWithCookieOnRedirect()
     {
         $response = new RedirectResponse('foo.bar');
-        $this->assertEquals(0, count($response->headers->getCookies()));
+        $this->assertCount(0, $response->headers->getCookies());
         $this->assertEquals($response, $response->withCookie(new \Symfony\Component\HttpFoundation\Cookie('foo', 'bar')));
         $cookies = $response->headers->getCookies();
-        $this->assertEquals(1, count($cookies));
+        $this->assertCount(1, $cookies);
         $this->assertEquals('foo', $cookies[0]->getName());
         $this->assertEquals('bar', $cookies[0]->getValue());
     }
@@ -75,10 +78,10 @@ class HttpRedirectResponseTest extends PHPUnit_Framework_TestCase
         $response = new RedirectResponse('foo.bar');
         $response->setRequest(Request::create('/', 'GET', ['name' => 'Taylor', 'age' => 26]));
         $response->setSession($session = m::mock('Illuminate\Session\Store'));
-        $session->shouldReceive('get')->with('errors', m::type('Illuminate\Support\ViewErrorBag'))->andReturn(new Illuminate\Support\ViewErrorBag);
+        $session->shouldReceive('get')->with('errors', m::type('Illuminate\Support\ViewErrorBag'))->andReturn(new \Illuminate\Support\ViewErrorBag);
         $session->shouldReceive('flash')->once()->with('errors', m::type('Illuminate\Support\ViewErrorBag'));
         $provider = m::mock('Illuminate\Contracts\Support\MessageProvider');
-        $provider->shouldReceive('getMessageBag')->once()->andReturn(new Illuminate\Support\MessageBag);
+        $provider->shouldReceive('getMessageBag')->once()->andReturn(new \Illuminate\Support\MessageBag);
         $response->withErrors($provider);
     }
 
@@ -101,7 +104,7 @@ class HttpRedirectResponseTest extends PHPUnit_Framework_TestCase
         $response = new RedirectResponse('foo.bar');
         $response->setRequest(Request::create('/', 'GET', ['name' => 'Taylor', 'age' => 26]));
         $response->setSession($session = m::mock('Illuminate\Session\Store'));
-        $session->shouldReceive('get')->with('errors', m::type('Illuminate\Support\ViewErrorBag'))->andReturn(new Illuminate\Support\ViewErrorBag);
+        $session->shouldReceive('get')->with('errors', m::type('Illuminate\Support\ViewErrorBag'))->andReturn(new \Illuminate\Support\ViewErrorBag);
         $session->shouldReceive('flash')->once()->with('errors', m::type('Illuminate\Support\ViewErrorBag'));
         $provider = ['foo' => 'bar'];
         $response->withErrors($provider);
@@ -116,9 +119,12 @@ class HttpRedirectResponseTest extends PHPUnit_Framework_TestCase
         $response->withFoo('bar');
     }
 
+    /**
+     * @expectedException \BadMethodCallException
+     * @expectedExceptionMessage Method [doesNotExist] does not exist on Redirect.
+     */
     public function testMagicCallException()
     {
-        $this->setExpectedException('BadMethodCallException');
         $response = new RedirectResponse('foo.bar');
         $response->doesNotExist('bar');
     }

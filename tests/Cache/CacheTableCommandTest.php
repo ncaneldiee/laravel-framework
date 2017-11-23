@@ -1,10 +1,13 @@
 <?php
 
+namespace Illuminate\Tests\Cache;
+
 use Mockery as m;
+use PHPUnit\Framework\TestCase;
 use Illuminate\Foundation\Application;
 use Illuminate\Cache\Console\CacheTableCommand;
 
-class CacheTableCommandTest extends PHPUnit_Framework_TestCase
+class CacheTableCommandTest extends TestCase
 {
     public function tearDown()
     {
@@ -15,11 +18,11 @@ class CacheTableCommandTest extends PHPUnit_Framework_TestCase
     {
         $command = new CacheTableCommandTestStub(
             $files = m::mock('Illuminate\Filesystem\Filesystem'),
-            $composer = m::mock('Illuminate\Foundation\Composer')
+            $composer = m::mock('Illuminate\Support\Composer')
         );
         $creator = m::mock('Illuminate\Database\Migrations\MigrationCreator')->shouldIgnoreMissing();
 
-        $app = new Application();
+        $app = new Application;
         $app->useDatabasePath(__DIR__);
         $app['migration.creator'] = $creator;
         $command->setLaravel($app);
@@ -34,7 +37,7 @@ class CacheTableCommandTest extends PHPUnit_Framework_TestCase
 
     protected function runCommand($command, $input = [])
     {
-        return $command->run(new Symfony\Component\Console\Input\ArrayInput($input), new Symfony\Component\Console\Output\NullOutput);
+        return $command->run(new \Symfony\Component\Console\Input\ArrayInput($input), new \Symfony\Component\Console\Output\NullOutput);
     }
 }
 

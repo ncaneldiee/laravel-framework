@@ -1,273 +1,444 @@
 <?php
 
+namespace Illuminate\Tests\Filesystem;
+
+use PHPUnit\Framework\TestCase;
 use Illuminate\Filesystem\Filesystem;
 
-class FilesystemTest extends PHPUnit_Framework_TestCase
+class FilesystemTest extends TestCase
 {
+    private $tempDir;
+
+    public function setUp()
+    {
+        $this->tempDir = __DIR__.'/tmp';
+        mkdir($this->tempDir);
+    }
+
+    public function tearDown()
+    {
+        $files = new Filesystem;
+        $files->deleteDirectory($this->tempDir);
+    }
+
     public function testGetRetrievesFiles()
     {
-        file_put_contents(__DIR__.'/file.txt', 'Hello World');
+        file_put_contents($this->tempDir.'/file.txt', 'Hello World');
         $files = new Filesystem;
-        $this->assertEquals('Hello World', $files->get(__DIR__.'/file.txt'));
-        @unlink(__DIR__.'/file.txt');
+        $this->assertEquals('Hello World', $files->get($this->tempDir.'/file.txt'));
     }
 
     public function testPutStoresFiles()
     {
         $files = new Filesystem;
-        $files->put(__DIR__.'/file.txt', 'Hello World');
-        $this->assertEquals('Hello World', file_get_contents(__DIR__.'/file.txt'));
-        @unlink(__DIR__.'/file.txt');
+        $files->put($this->tempDir.'/file.txt', 'Hello World');
+        $this->assertStringEqualsFile($this->tempDir.'/file.txt', 'Hello World');
+    }
+
+    public function testSetChmod()
+    {
+        file_put_contents($this->tempDir.'/file.txt', 'Hello World');
+        $files = new Filesystem;
+        $files->chmod($this->tempDir.'/file.txt', 0755);
+        $filePermission = substr(sprintf('%o', fileperms($this->tempDir.'/file.txt')), -4);
+        $this->assertEquals('0755', $filePermission);
+    }
+
+    public function testGetChmod()
+    {
+        file_put_contents($this->tempDir.'/file.txt', 'Hello World');
+        chmod($this->tempDir.'/file.txt', 0755);
+
+        $files = new Filesystem;
+        $filePermisson = $files->chmod($this->tempDir.'/file.txt');
+        $this->assertEquals('0755', $filePermisson);
     }
 
     public function testDeleteRemovesFiles()
     {
-        file_put_contents(__DIR__.'/file.txt', 'Hello World');
+        file_put_contents($this->tempDir.'/file1.txt', 'Hello World');
+        file_put_contents($this->tempDir.'/file2.txt', 'Hello World');
+        file_put_contents($this->tempDir.'/file3.txt', 'Hello World');
+
         $files = new Filesystem;
-        $files->delete(__DIR__.'/file.txt');
-        $this->assertFileNotExists(__DIR__.'/file.txt');
-        @unlink(__DIR__.'/file.txt');
+        $files->delete($this->tempDir.'/file1.txt');
+        $this->assertFileNotExists($this->tempDir.'/file1.txt');
+
+        $files->delete([$this->tempDir.'/file2.txt', $this->tempDir.'/file3.txt']);
+        $this->assertFileNotExists($this->tempDir.'/file2.txt');
+        $this->assertFileNotExists($this->tempDir.'/file3.txt');
     }
 
     public function testPrependExistingFiles()
     {
         $files = new Filesystem;
-        $files->put(__DIR__.'/file.txt', 'World');
-        $files->prepend(__DIR__.'/file.txt', 'Hello ');
-        $this->assertEquals('Hello World', file_get_contents(__DIR__.'/file.txt'));
-        @unlink(__DIR__.'/file.txt');
+        $files->put($this->tempDir.'/file.txt', 'World');
+        $files->prepend($this->tempDir.'/file.txt', 'Hello ');
+        $this->assertStringEqualsFile($this->tempDir.'/file.txt', 'Hello World');
     }
 
     public function testPrependNewFiles()
     {
         $files = new Filesystem;
-        $files->prepend(__DIR__.'/file.txt', 'Hello World');
-        $this->assertEquals('Hello World', file_get_contents(__DIR__.'/file.txt'));
-        @unlink(__DIR__.'/file.txt');
+        $files->prepend($this->tempDir.'/file.txt', 'Hello World');
+        $this->assertStringEqualsFile($this->tempDir.'/file.txt', 'Hello World');
     }
 
     public function testDeleteDirectory()
     {
-        mkdir(__DIR__.'/foo');
-        file_put_contents(__DIR__.'/foo/file.txt', 'Hello World');
+        mkdir($this->tempDir.'/foo');
+        file_put_contents($this->tempDir.'/foo/file.txt', 'Hello World');
         $files = new Filesystem;
-        $files->deleteDirectory(__DIR__.'/foo');
-        $this->assertFalse(is_dir(__DIR__.'/foo'));
-        $this->assertFileNotExists(__DIR__.'/foo/file.txt');
+        $files->deleteDirectory($this->tempDir.'/foo');
+        $this->assertFalse(is_dir($this->tempDir.'/foo'));
+        $this->assertFileNotExists($this->tempDir.'/foo/file.txt');
     }
 
     public function testCleanDirectory()
     {
-        mkdir(__DIR__.'/foo');
-        file_put_contents(__DIR__.'/foo/file.txt', 'Hello World');
+        mkdir($this->tempDir.'/foo');
+        file_put_contents($this->tempDir.'/foo/file.txt', 'Hello World');
         $files = new Filesystem;
-        $files->cleanDirectory(__DIR__.'/foo');
-        $this->assertTrue(is_dir(__DIR__.'/foo'));
-        $this->assertFileNotExists(__DIR__.'/foo/file.txt');
-        @rmdir(__DIR__.'/foo');
+        $files->cleanDirectory($this->tempDir.'/foo');
+        $this->assertTrue(is_dir($this->tempDir.'/foo'));
+        $this->assertFileNotExists($this->tempDir.'/foo/file.txt');
     }
 
     public function testMacro()
     {
-        file_put_contents(__DIR__.'/foo.txt', 'Hello World');
+        file_put_contents($this->tempDir.'/foo.txt', 'Hello World');
         $files = new Filesystem;
-        $files->macro('getFoo', function () use ($files) { return $files->get(__DIR__.'/foo.txt'); });
+        $tempDir = $this->tempDir;
+        $files->macro('getFoo', function () use ($files, $tempDir) {
+            return $files->get($tempDir.'/foo.txt');
+        });
         $this->assertEquals('Hello World', $files->getFoo());
-        @unlink(__DIR__.'/foo.txt');
     }
 
     public function testFilesMethod()
     {
-        mkdir(__DIR__.'/foo');
-        file_put_contents(__DIR__.'/foo/1.txt', '1');
-        file_put_contents(__DIR__.'/foo/2.txt', '2');
-        mkdir(__DIR__.'/foo/bar');
+        mkdir($this->tempDir.'/foo');
+        file_put_contents($this->tempDir.'/foo/1.txt', '1');
+        file_put_contents($this->tempDir.'/foo/2.txt', '2');
+        mkdir($this->tempDir.'/foo/bar');
         $files = new Filesystem;
-        $this->assertEquals([__DIR__.'/foo/1.txt', __DIR__.'/foo/2.txt'], $files->files(__DIR__.'/foo'));
+        $results = $files->files($this->tempDir.'/foo');
+        $this->assertInstanceOf('SplFileInfo', $results[0]);
+        $this->assertInstanceOf('SplFileInfo', $results[1]);
         unset($files);
-        @unlink(__DIR__.'/foo/1.txt');
-        @unlink(__DIR__.'/foo/2.txt');
-        @rmdir(__DIR__.'/foo/bar');
-        @rmdir(__DIR__.'/foo');
     }
 
     public function testCopyDirectoryReturnsFalseIfSourceIsntDirectory()
     {
         $files = new Filesystem;
-        $this->assertFalse($files->copyDirectory(__DIR__.'/foo/bar/baz/breeze/boom', __DIR__));
+        $this->assertFalse($files->copyDirectory($this->tempDir.'/foo/bar/baz/breeze/boom', $this->tempDir));
     }
 
     public function testCopyDirectoryMovesEntireDirectory()
     {
-        mkdir(__DIR__.'/tmp', 0777, true);
-        file_put_contents(__DIR__.'/tmp/foo.txt', '');
-        file_put_contents(__DIR__.'/tmp/bar.txt', '');
-        mkdir(__DIR__.'/tmp/nested', 0777, true);
-        file_put_contents(__DIR__.'/tmp/nested/baz.txt', '');
+        mkdir($this->tempDir.'/tmp', 0777, true);
+        file_put_contents($this->tempDir.'/tmp/foo.txt', '');
+        file_put_contents($this->tempDir.'/tmp/bar.txt', '');
+        mkdir($this->tempDir.'/tmp/nested', 0777, true);
+        file_put_contents($this->tempDir.'/tmp/nested/baz.txt', '');
 
         $files = new Filesystem;
-        $files->copyDirectory(__DIR__.'/tmp', __DIR__.'/tmp2');
-        $this->assertTrue(is_dir(__DIR__.'/tmp2'));
-        $this->assertFileExists(__DIR__.'/tmp2/foo.txt');
-        $this->assertFileExists(__DIR__.'/tmp2/bar.txt');
-        $this->assertTrue(is_dir(__DIR__.'/tmp2/nested'));
-        $this->assertFileExists(__DIR__.'/tmp2/nested/baz.txt');
+        $files->copyDirectory($this->tempDir.'/tmp', $this->tempDir.'/tmp2');
+        $this->assertTrue(is_dir($this->tempDir.'/tmp2'));
+        $this->assertFileExists($this->tempDir.'/tmp2/foo.txt');
+        $this->assertFileExists($this->tempDir.'/tmp2/bar.txt');
+        $this->assertTrue(is_dir($this->tempDir.'/tmp2/nested'));
+        $this->assertFileExists($this->tempDir.'/tmp2/nested/baz.txt');
+    }
 
-        unlink(__DIR__.'/tmp/nested/baz.txt');
-        rmdir(__DIR__.'/tmp/nested');
-        unlink(__DIR__.'/tmp/bar.txt');
-        unlink(__DIR__.'/tmp/foo.txt');
-        rmdir(__DIR__.'/tmp');
+    public function testMoveDirectoryMovesEntireDirectory()
+    {
+        mkdir($this->tempDir.'/tmp', 0777, true);
+        file_put_contents($this->tempDir.'/tmp/foo.txt', '');
+        file_put_contents($this->tempDir.'/tmp/bar.txt', '');
+        mkdir($this->tempDir.'/tmp/nested', 0777, true);
+        file_put_contents($this->tempDir.'/tmp/nested/baz.txt', '');
 
-        unlink(__DIR__.'/tmp2/nested/baz.txt');
-        rmdir(__DIR__.'/tmp2/nested');
-        unlink(__DIR__.'/tmp2/foo.txt');
-        unlink(__DIR__.'/tmp2/bar.txt');
-        rmdir(__DIR__.'/tmp2');
+        $files = new Filesystem;
+        $files->moveDirectory($this->tempDir.'/tmp', $this->tempDir.'/tmp2');
+        $this->assertTrue(is_dir($this->tempDir.'/tmp2'));
+        $this->assertFileExists($this->tempDir.'/tmp2/foo.txt');
+        $this->assertFileExists($this->tempDir.'/tmp2/bar.txt');
+        $this->assertTrue(is_dir($this->tempDir.'/tmp2/nested'));
+        $this->assertFileExists($this->tempDir.'/tmp2/nested/baz.txt');
+        $this->assertFalse(is_dir($this->tempDir.'/tmp'));
+    }
+
+    public function testMoveDirectoryMovesEntireDirectoryAndOverwrites()
+    {
+        mkdir($this->tempDir.'/tmp', 0777, true);
+        file_put_contents($this->tempDir.'/tmp/foo.txt', '');
+        file_put_contents($this->tempDir.'/tmp/bar.txt', '');
+        mkdir($this->tempDir.'/tmp/nested', 0777, true);
+        file_put_contents($this->tempDir.'/tmp/nested/baz.txt', '');
+        mkdir($this->tempDir.'/tmp2', 0777, true);
+        file_put_contents($this->tempDir.'/tmp2/foo2.txt', '');
+        file_put_contents($this->tempDir.'/tmp2/bar2.txt', '');
+
+        $files = new Filesystem;
+        $files->moveDirectory($this->tempDir.'/tmp', $this->tempDir.'/tmp2', true);
+        $this->assertTrue(is_dir($this->tempDir.'/tmp2'));
+        $this->assertFileExists($this->tempDir.'/tmp2/foo.txt');
+        $this->assertFileExists($this->tempDir.'/tmp2/bar.txt');
+        $this->assertTrue(is_dir($this->tempDir.'/tmp2/nested'));
+        $this->assertFileExists($this->tempDir.'/tmp2/nested/baz.txt');
+        $this->assertFileNotExists($this->tempDir.'/tmp2/foo2.txt');
+        $this->assertFileNotExists($this->tempDir.'/tmp2/bar2.txt');
+        $this->assertFalse(is_dir($this->tempDir.'/tmp'));
     }
 
     /**
-     * @expectedException Illuminate\Contracts\Filesystem\FileNotFoundException
+     * @expectedException \Illuminate\Contracts\Filesystem\FileNotFoundException
      */
     public function testGetThrowsExceptionNonexisitingFile()
     {
         $files = new Filesystem;
-        $files->get(__DIR__.'/unknown-file.txt');
+        $files->get($this->tempDir.'/unknown-file.txt');
     }
 
     public function testGetRequireReturnsProperly()
     {
-        file_put_contents(__DIR__.'/file.php', '<?php return "Howdy?"; ?>');
+        file_put_contents($this->tempDir.'/file.php', '<?php return "Howdy?"; ?>');
         $files = new Filesystem;
-        $this->assertEquals('Howdy?', $files->getRequire(__DIR__.'/file.php'));
-        @unlink(__DIR__.'/file.php');
+        $this->assertEquals('Howdy?', $files->getRequire($this->tempDir.'/file.php'));
     }
 
     /**
-     * @expectedException Illuminate\Contracts\Filesystem\FileNotFoundException
+     * @expectedException \Illuminate\Contracts\Filesystem\FileNotFoundException
      */
     public function testGetRequireThrowsExceptionNonexisitingFile()
     {
         $files = new Filesystem;
-        $files->getRequire(__DIR__.'/file.php');
+        $files->getRequire($this->tempDir.'/file.php');
     }
 
     public function testAppendAddsDataToFile()
     {
-        file_put_contents(__DIR__.'/file.txt', 'foo');
+        file_put_contents($this->tempDir.'/file.txt', 'foo');
         $files = new Filesystem;
-        $bytesWritten = $files->append(__DIR__.'/file.txt', 'bar');
+        $bytesWritten = $files->append($this->tempDir.'/file.txt', 'bar');
         $this->assertEquals(mb_strlen('bar', '8bit'), $bytesWritten);
-        $this->assertFileExists(__DIR__.'/file.txt');
-        $this->assertStringEqualsFile(__DIR__.'/file.txt', 'foobar');
-        @unlink(__DIR__.'/file.txt');
+        $this->assertFileExists($this->tempDir.'/file.txt');
+        $this->assertStringEqualsFile($this->tempDir.'/file.txt', 'foobar');
     }
 
     public function testMoveMovesFiles()
     {
-        file_put_contents(__DIR__.'/foo.txt', 'foo');
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
         $files = new Filesystem;
-        $files->move(__DIR__.'/foo.txt', __DIR__.'/bar.txt');
-        $this->assertFileExists(__DIR__.'/bar.txt');
-        $this->assertFileNotExists(__DIR__.'/foo.txt');
-        @unlink(__DIR__.'/bar.txt');
+        $files->move($this->tempDir.'/foo.txt', $this->tempDir.'/bar.txt');
+        $this->assertFileExists($this->tempDir.'/bar.txt');
+        $this->assertFileNotExists($this->tempDir.'/foo.txt');
     }
 
     public function testExtensionReturnsExtension()
     {
-        file_put_contents(__DIR__.'/foo.txt', 'foo');
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
         $files = new Filesystem;
-        $this->assertEquals('txt', $files->extension(__DIR__.'/foo.txt'));
-        @unlink(__DIR__.'/foo.txt');
+        $this->assertEquals('txt', $files->extension($this->tempDir.'/foo.txt'));
     }
 
-    public function testTypeIndentifiesFile()
+    public function testBasenameReturnsBasename()
     {
-        file_put_contents(__DIR__.'/foo.txt', 'foo');
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
         $files = new Filesystem;
-        $this->assertEquals('file', $files->type(__DIR__.'/foo.txt'));
-        @unlink(__DIR__.'/foo.txt');
+        $this->assertEquals('foo.txt', $files->basename($this->tempDir.'/foo.txt'));
     }
 
-    public function testTypeIndentifiesDirectory()
+    public function testDirnameReturnsDirectory()
     {
-        mkdir(__DIR__.'/foo');
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
         $files = new Filesystem;
-        $this->assertEquals('dir', $files->type(__DIR__.'/foo'));
-        @rmdir(__DIR__.'/foo');
+        $this->assertEquals($this->tempDir, $files->dirname($this->tempDir.'/foo.txt'));
+    }
+
+    public function testTypeIdentifiesFile()
+    {
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
+        $files = new Filesystem;
+        $this->assertEquals('file', $files->type($this->tempDir.'/foo.txt'));
+    }
+
+    public function testTypeIdentifiesDirectory()
+    {
+        mkdir($this->tempDir.'/foo');
+        $files = new Filesystem;
+        $this->assertEquals('dir', $files->type($this->tempDir.'/foo'));
     }
 
     public function testSizeOutputsSize()
     {
-        $size = file_put_contents(__DIR__.'/foo.txt', 'foo');
+        $size = file_put_contents($this->tempDir.'/foo.txt', 'foo');
         $files = new Filesystem;
-        $this->assertEquals($size, $files->size(__DIR__.'/foo.txt'));
-        @unlink(__DIR__.'/foo.txt');
+        $this->assertEquals($size, $files->size($this->tempDir.'/foo.txt'));
     }
 
+    /**
+     * @requires extension fileinfo
+     */
     public function testMimeTypeOutputsMimeType()
     {
-        file_put_contents(__DIR__.'/foo.txt', 'foo');
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
         $files = new Filesystem;
-        $this->assertEquals('text/plain', $files->mimeType(__DIR__.'/foo.txt'));
-        @unlink(__DIR__.'/foo.txt');
+        $this->assertEquals('text/plain', $files->mimeType($this->tempDir.'/foo.txt'));
     }
 
     public function testIsWritable()
     {
-        file_put_contents(__DIR__.'/foo.txt', 'foo');
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
         $files = new Filesystem;
-        @chmod(__DIR__.'/foo.txt', 0444);
-        $this->assertFalse($files->isWritable(__DIR__.'/foo.txt'));
-        @chmod(__DIR__.'/foo.txt', 0777);
-        $this->assertTrue($files->isWritable(__DIR__.'/foo.txt'));
-        @unlink(__DIR__.'/foo.txt');
+        @chmod($this->tempDir.'/foo.txt', 0444);
+        $this->assertFalse($files->isWritable($this->tempDir.'/foo.txt'));
+        @chmod($this->tempDir.'/foo.txt', 0777);
+        $this->assertTrue($files->isWritable($this->tempDir.'/foo.txt'));
+    }
+
+    public function testIsReadable()
+    {
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
+        $files = new Filesystem;
+        // chmod is noneffective on Windows
+        if (DIRECTORY_SEPARATOR === '\\') {
+            $this->assertTrue($files->isReadable($this->tempDir.'/foo.txt'));
+        } else {
+            @chmod($this->tempDir.'/foo.txt', 0000);
+            $this->assertFalse($files->isReadable($this->tempDir.'/foo.txt'));
+            @chmod($this->tempDir.'/foo.txt', 0777);
+            $this->assertTrue($files->isReadable($this->tempDir.'/foo.txt'));
+        }
+        $this->assertFalse($files->isReadable($this->tempDir.'/doesnotexist.txt'));
     }
 
     public function testGlobFindsFiles()
     {
-        file_put_contents(__DIR__.'/foo.txt', 'foo');
-        file_put_contents(__DIR__.'/bar.txt', 'bar');
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
+        file_put_contents($this->tempDir.'/bar.txt', 'bar');
         $files = new Filesystem;
-        $glob = $files->glob(__DIR__.'/*.txt');
-        $this->assertContains(__DIR__.'/foo.txt', $glob);
-        $this->assertContains(__DIR__.'/bar.txt', $glob);
-        @unlink(__DIR__.'/foo.txt');
-        @unlink(__DIR__.'/bar.txt');
+        $glob = $files->glob($this->tempDir.'/*.txt');
+        $this->assertContains($this->tempDir.'/foo.txt', $glob);
+        $this->assertContains($this->tempDir.'/bar.txt', $glob);
     }
 
     public function testAllFilesFindsFiles()
     {
-        file_put_contents(__DIR__.'/foo.txt', 'foo');
-        file_put_contents(__DIR__.'/bar.txt', 'bar');
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
+        file_put_contents($this->tempDir.'/bar.txt', 'bar');
         $files = new Filesystem;
         $allFiles = [];
-        foreach ($files->allFiles(__DIR__) as $file) {
+        foreach ($files->allFiles($this->tempDir) as $file) {
             $allFiles[] = $file->getFilename();
         }
         $this->assertContains('foo.txt', $allFiles);
         $this->assertContains('bar.txt', $allFiles);
-        @unlink(__DIR__.'/foo.txt');
-        @unlink(__DIR__.'/bar.txt');
     }
 
     public function testDirectoriesFindsDirectories()
     {
-        mkdir(__DIR__.'/foo');
-        mkdir(__DIR__.'/bar');
+        mkdir($this->tempDir.'/foo');
+        mkdir($this->tempDir.'/bar');
         $files = new Filesystem;
-        $directories = $files->directories(__DIR__);
-        $this->assertContains(__DIR__.DIRECTORY_SEPARATOR.'foo', $directories);
-        $this->assertContains(__DIR__.DIRECTORY_SEPARATOR.'bar', $directories);
-        @rmdir(__DIR__.'/foo');
-        @rmdir(__DIR__.'/bar');
+        $directories = $files->directories($this->tempDir);
+        $this->assertContains($this->tempDir.DIRECTORY_SEPARATOR.'foo', $directories);
+        $this->assertContains($this->tempDir.DIRECTORY_SEPARATOR.'bar', $directories);
     }
 
     public function testMakeDirectory()
     {
         $files = new Filesystem;
-        $this->assertTrue($files->makeDirectory(__DIR__.'/foo'));
-        $this->assertFileExists(__DIR__.'/foo');
-        @rmdir(__DIR__.'/foo');
+        $this->assertTrue($files->makeDirectory($this->tempDir.'/foo'));
+        $this->assertFileExists($this->tempDir.'/foo');
+    }
+
+    /**
+     * @requires extension pcntl
+     */
+    public function testSharedGet()
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('Skipping since the pcntl extension is not available');
+        }
+
+        $content = str_repeat('123456', 1000000);
+        $result = 1;
+
+        for ($i = 1; $i <= 20; $i++) {
+            $pid = pcntl_fork();
+
+            if (! $pid) {
+                $files = new Filesystem;
+                $files->put($this->tempDir.'/file.txt', $content, true);
+                $read = $files->get($this->tempDir.'/file.txt', true);
+
+                exit(strlen($read) === strlen($content) ? 1 : 0);
+            }
+        }
+
+        while (pcntl_waitpid(0, $status) != -1) {
+            $status = pcntl_wexitstatus($status);
+            $result *= $status;
+        }
+
+        $this->assertTrue($result === 1);
+    }
+
+    public function testRequireOnceRequiresFileProperly()
+    {
+        $filesystem = new Filesystem;
+        mkdir($this->tempDir.'/foo');
+        file_put_contents($this->tempDir.'/foo/foo.php', '<?php function random_function_xyz(){};');
+        $filesystem->requireOnce($this->tempDir.'/foo/foo.php');
+        file_put_contents($this->tempDir.'/foo/foo.php', '<?php function random_function_xyz_changed(){};');
+        $filesystem->requireOnce($this->tempDir.'/foo/foo.php');
+        $this->assertTrue(function_exists('random_function_xyz'));
+        $this->assertFalse(function_exists('random_function_xyz_changed'));
+    }
+
+    public function testCopyCopiesFileProperly()
+    {
+        $filesystem = new Filesystem;
+        $data = 'contents';
+        mkdir($this->tempDir.'/foo');
+        file_put_contents($this->tempDir.'/foo/foo.txt', $data);
+        $filesystem->copy($this->tempDir.'/foo/foo.txt', $this->tempDir.'/foo/foo2.txt');
+        $this->assertTrue(file_exists($this->tempDir.'/foo/foo2.txt'));
+        $this->assertEquals($data, file_get_contents($this->tempDir.'/foo/foo2.txt'));
+    }
+
+    public function testIsFileChecksFilesProperly()
+    {
+        $filesystem = new Filesystem;
+        mkdir($this->tempDir.'/foo');
+        file_put_contents($this->tempDir.'/foo/foo.txt', 'contents');
+        $this->assertTrue($filesystem->isFile($this->tempDir.'/foo/foo.txt'));
+        $this->assertFalse($filesystem->isFile($this->tempDir.'./foo'));
+    }
+
+    public function testFilesMethodReturnsFileInfoObjects()
+    {
+        mkdir($this->tempDir.'/foo');
+        file_put_contents($this->tempDir.'/foo/1.txt', '1');
+        file_put_contents($this->tempDir.'/foo/2.txt', '2');
+        mkdir($this->tempDir.'/foo/bar');
+        $files = new Filesystem;
+        foreach ($files->files($this->tempDir.'/foo') as $file) {
+            $this->assertInstanceOf(\SplFileInfo::class, $file);
+        }
+        unset($files);
+    }
+
+    public function testAllFilesReturnsFileInfoObjects()
+    {
+        file_put_contents($this->tempDir.'/foo.txt', 'foo');
+        file_put_contents($this->tempDir.'/bar.txt', 'bar');
+        $files = new Filesystem;
+        $allFiles = [];
+        foreach ($files->allFiles($this->tempDir) as $file) {
+            $this->assertInstanceOf(\SplFileInfo::class, $file);
+        }
     }
 }

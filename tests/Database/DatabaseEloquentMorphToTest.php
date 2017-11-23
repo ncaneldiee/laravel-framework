@@ -1,10 +1,12 @@
 <?php
 
+namespace Illuminate\Tests\Database;
+
 use Mockery as m;
-use Illuminate\Database\Eloquent\Collection;
+use PHPUnit\Framework\TestCase;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 
-class DatabaseEloquentMorphToTest extends PHPUnit_Framework_TestCase
+class DatabaseEloquentMorphToTest extends TestCase
 {
     public function tearDown()
     {
@@ -37,59 +39,6 @@ class DatabaseEloquentMorphToTest extends PHPUnit_Framework_TestCase
         ], $dictionary);
     }
 
-    public function testModelsAreProperlyPulledAndMatched()
-    {
-        $relation = $this->getRelation();
-
-        $one = m::mock('StdClass');
-        $one->morph_type = 'morph_type_1';
-        $one->foreign_key = 'foreign_key_1';
-
-        $two = m::mock('StdClass');
-        $two->morph_type = 'morph_type_1';
-        $two->foreign_key = 'foreign_key_1';
-
-        $three = m::mock('StdClass');
-        $three->morph_type = 'morph_type_2';
-        $three->foreign_key = 'foreign_key_2';
-
-        $relation->addEagerConstraints([$one, $two, $three]);
-
-        $relation->shouldReceive('createModelByType')->once()->with('morph_type_1')->andReturn($firstQuery = m::mock('Illuminate\Database\Eloquent\Builder'));
-        $relation->shouldReceive('createModelByType')->once()->with('morph_type_2')->andReturn($secondQuery = m::mock('Illuminate\Database\Eloquent\Builder'));
-        $firstQuery->shouldReceive('getKeyName')->andReturn('id');
-        $secondQuery->shouldReceive('getKeyName')->andReturn('id');
-
-        $firstQuery->shouldReceive('newQuery')->once()->andReturn($firstQuery);
-        $secondQuery->shouldReceive('newQuery')->once()->andReturn($secondQuery);
-
-        $firstQuery->shouldReceive('whereIn')->once()->with('id', ['foreign_key_1'])->andReturn($firstQuery);
-        $firstQuery->shouldReceive('get')->once()->andReturn(Collection::make([$resultOne = m::mock('StdClass')]));
-        $resultOne->shouldReceive('getKey')->andReturn('foreign_key_1');
-
-        $secondQuery->shouldReceive('whereIn')->once()->with('id', ['foreign_key_2'])->andReturn($secondQuery);
-        $secondQuery->shouldReceive('get')->once()->andReturn(Collection::make([$resultTwo = m::mock('StdClass')]));
-        $resultTwo->shouldReceive('getKey')->andReturn('foreign_key_2');
-
-        $one->shouldReceive('setRelation')->once()->with('relation', $resultOne);
-        $two->shouldReceive('setRelation')->once()->with('relation', $resultOne);
-        $three->shouldReceive('setRelation')->once()->with('relation', $resultTwo);
-
-        $relation->getEager();
-    }
-
-    public function testModelsWithSoftDeleteAreProperlyPulled()
-    {
-        $builder = m::mock('Illuminate\Database\Eloquent\Builder');
-
-        $relation = $this->getRelation(null, $builder);
-
-        $builder->shouldReceive('getMacro')->once()->with('withTrashed')->andReturn(function () { return true; });
-        $builder->shouldReceive('withTrashed')->once();
-
-        $relation->withTrashed();
-    }
-
     public function testAssociateMethodSetsForeignKeyAndTypeOnModel()
     {
         $parent = m::mock('Illuminate\Database\Eloquent\Model');
@@ -106,6 +55,20 @@ class DatabaseEloquentMorphToTest extends PHPUnit_Framework_TestCase
         $parent->shouldReceive('setRelation')->once()->with('relation', $associate);
 
         $relation->associate($associate);
+    }
+
+    public function testAssociateMethodIgnoresNullValue()
+    {
+        $parent = m::mock('Illuminate\Database\Eloquent\Model');
+        $parent->shouldReceive('getAttribute')->once()->with('foreign_key')->andReturn('foreign.value');
+
+        $relation = $this->getRelationAssociate($parent);
+
+        $parent->shouldReceive('setAttribute')->once()->with('foreign_key', null);
+        $parent->shouldReceive('setAttribute')->once()->with('morph_type', null);
+        $parent->shouldReceive('setRelation')->once()->with('relation', null);
+
+        $relation->associate(null);
     }
 
     public function testDissociateMethodDeletesUnsetsKeyAndTypeOnModel()
@@ -149,7 +112,7 @@ class DatabaseEloquentMorphToTest extends PHPUnit_Framework_TestCase
     }
 }
 
-class EloquentMorphToModelStub extends Illuminate\Database\Eloquent\Model
+class EloquentMorphToModelStub extends \Illuminate\Database\Eloquent\Model
 {
     public $foreign_key = 'foreign.value';
 }

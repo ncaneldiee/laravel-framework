@@ -1,9 +1,11 @@
 <?php
 
-use Mockery as m;
-use Aws\Sqs\SqsClient;
+namespace Illuminate\Tests\Queue;
 
-class QueueSqsJobTest extends PHPUnit_Framework_TestCase
+use Mockery as m;
+use PHPUnit\Framework\TestCase;
+
+class QueueSqsJobTest extends TestCase
 {
     public function setUp()
     {
@@ -34,11 +36,13 @@ class QueueSqsJobTest extends PHPUnit_Framework_TestCase
         $this->mockedMessageId = 'e3cd03ee-59a3-4ad8-b0aa-ee2e3808ac81';
         $this->mockedReceiptHandle = '0NNAq8PwvXuWv5gMtS9DJ8qEdyiUwbAjpp45w2m6M4SJ1Y+PxCh7R930NRB8ylSacEmoSnW18bgd4nK\/O6ctE+VFVul4eD23mA07vVoSnPI4F\/voI1eNCp6Iax0ktGmhlNVzBwaZHEr91BRtqTRM3QKd2ASF8u+IQaSwyl\/DGK+P1+dqUOodvOVtExJwdyDLy1glZVgm85Yw9Jf5yZEEErqRwzYz\/qSigdvW4sm2l7e4phRol\/+IjMtovOyH\/ukueYdlVbQ4OshQLENhUKe7RNN5i6bE\/e5x9bnPhfj2gbM';
 
-        $this->mockedJobData = ['Body' => $this->mockedPayload,
-                         'MD5OfBody' => md5($this->mockedPayload),
-                         'ReceiptHandle' => $this->mockedReceiptHandle,
-                         'MessageId' => $this->mockedMessageId,
-                         'Attributes' => ['ApproximateReceiveCount' => 1], ];
+        $this->mockedJobData = [
+            'Body' => $this->mockedPayload,
+            'MD5OfBody' => md5($this->mockedPayload),
+            'ReceiptHandle' => $this->mockedReceiptHandle,
+            'MessageId' => $this->mockedMessageId,
+            'Attributes' => ['ApproximateReceiveCount' => 1],
+        ];
     }
 
     public function tearDown()
@@ -49,7 +53,7 @@ class QueueSqsJobTest extends PHPUnit_Framework_TestCase
     public function testFireProperlyCallsTheJobHandler()
     {
         $job = $this->getJob();
-        $job->getContainer()->shouldReceive('make')->once()->with('foo')->andReturn($handler = m::mock('StdClass'));
+        $job->getContainer()->shouldReceive('make')->once()->with('foo')->andReturn($handler = m::mock('stdClass'));
         $handler->shouldReceive('fire')->once()->with($job, ['data']);
         $job->fire();
     }
@@ -60,7 +64,7 @@ class QueueSqsJobTest extends PHPUnit_Framework_TestCase
             ->setMethods(['deleteMessage'])
             ->disableOriginalConstructor()
             ->getMock();
-        $queue = $this->getMock('Illuminate\Queue\SqsQueue', ['getQueue'], [$this->mockedSqsClient, $this->queueName, $this->account]);
+        $queue = $this->getMockBuilder('Illuminate\Queue\SqsQueue')->setMethods(['getQueue'])->setConstructorArgs([$this->mockedSqsClient, $this->queueName, $this->account])->getMock();
         $queue->setContainer($this->mockedContainer);
         $job = $this->getJob();
         $job->getSqs()->expects($this->once())->method('deleteMessage')->with(['QueueUrl' => $this->queueUrl, 'ReceiptHandle' => $this->mockedReceiptHandle]);
@@ -73,7 +77,7 @@ class QueueSqsJobTest extends PHPUnit_Framework_TestCase
             ->setMethods(['changeMessageVisibility'])
             ->disableOriginalConstructor()
             ->getMock();
-        $queue = $this->getMock('Illuminate\Queue\SqsQueue', ['getQueue'], [$this->mockedSqsClient, $this->queueName, $this->account]);
+        $queue = $this->getMockBuilder('Illuminate\Queue\SqsQueue')->setMethods(['getQueue'])->setConstructorArgs([$this->mockedSqsClient, $this->queueName, $this->account])->getMock();
         $queue->setContainer($this->mockedContainer);
         $job = $this->getJob();
         $job->getSqs()->expects($this->once())->method('changeMessageVisibility')->with(['QueueUrl' => $this->queueUrl, 'ReceiptHandle' => $this->mockedReceiptHandle, 'VisibilityTimeout' => $this->releaseDelay]);
@@ -83,11 +87,12 @@ class QueueSqsJobTest extends PHPUnit_Framework_TestCase
 
     protected function getJob()
     {
-        return new Illuminate\Queue\Jobs\SqsJob(
+        return new \Illuminate\Queue\Jobs\SqsJob(
             $this->mockedContainer,
             $this->mockedSqsClient,
-            $this->queueUrl,
-            $this->mockedJobData
+            $this->mockedJobData,
+            'connection-name',
+            $this->queueUrl
         );
     }
 }

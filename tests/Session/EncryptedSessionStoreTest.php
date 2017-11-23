@@ -1,8 +1,12 @@
 <?php
 
-use Mockery as m;
+namespace Illuminate\Tests\Session;
 
-class EncryptedSessionStoreTest extends PHPUnit_Framework_TestCase
+use Mockery as m;
+use ReflectionClass;
+use PHPUnit\Framework\TestCase;
+
+class EncryptedSessionStoreTest extends TestCase
 {
     public function tearDown()
     {
@@ -17,15 +21,15 @@ class EncryptedSessionStoreTest extends PHPUnit_Framework_TestCase
         $session->start();
         $session->put('foo', 'bar');
         $session->flash('baz', 'boom');
+        $session->now('qux', 'norf');
         $serialized = serialize([
             '_token' => $session->token(),
             'foo' => 'bar',
             'baz' => 'boom',
-            'flash' => [
+            '_flash' => [
                 'new' => [],
                 'old' => ['baz'],
             ],
-            '_sf2_meta' => $session->getBagData('_sf2_meta'),
         ]);
         $session->getEncrypter()->shouldReceive('encrypt')->once()->with($serialized)->andReturn($serialized);
         $session->getHandler()->shouldReceive('write')->once()->with(

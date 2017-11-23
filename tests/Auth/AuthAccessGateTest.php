@@ -1,12 +1,19 @@
 <?php
 
+namespace Illuminate\Tests\Auth;
+
+use stdClass;
+use PHPUnit\Framework\TestCase;
 use Illuminate\Auth\Access\Gate;
 use Illuminate\Container\Container;
+use Illuminate\Auth\Access\Response;
+use Illuminate\Auth\Access\HandlesAuthorization;
 
-class GateTest extends PHPUnit_Framework_TestCase
+class GateTest extends TestCase
 {
     /**
      * @expectedException \InvalidArgumentException
+     * @expectedExceptionMessage Callback must be a callable or a 'Class@method'
      */
     public function test_gate_throws_exception_on_invalid_callback_type()
     {
@@ -17,18 +24,53 @@ class GateTest extends PHPUnit_Framework_TestCase
     {
         $gate = $this->getBasicGate();
 
-        $gate->define('foo', function ($user) { return true; });
-        $gate->define('bar', function ($user) { return false; });
+        $gate->define('foo', function ($user) {
+            return true;
+        });
+        $gate->define('bar', function ($user) {
+            return false;
+        });
 
         $this->assertTrue($gate->check('foo'));
         $this->assertFalse($gate->check('bar'));
+    }
+
+    public function test_resource_gates_can_be_defined()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->resource('test', AccessGateTestResource::class);
+
+        $dummy = new AccessGateTestDummy;
+
+        $this->assertTrue($gate->check('test.view'));
+        $this->assertTrue($gate->check('test.create'));
+        $this->assertTrue($gate->check('test.update', $dummy));
+        $this->assertTrue($gate->check('test.delete', $dummy));
+    }
+
+    public function test_custom_resource_gates_can_be_defined()
+    {
+        $gate = $this->getBasicGate();
+
+        $abilities = [
+            'ability1' => 'foo',
+            'ability2' => 'bar',
+        ];
+
+        $gate->resource('test', AccessGateTestCustomResource::class, $abilities);
+
+        $this->assertTrue($gate->check('test.ability1'));
+        $this->assertTrue($gate->check('test.ability2'));
     }
 
     public function test_before_callbacks_can_override_result_if_necessary()
     {
         $gate = $this->getBasicGate();
 
-        $gate->define('foo', function ($user) { return true; });
+        $gate->define('foo', function ($user) {
+            return true;
+        });
         $gate->before(function ($user, $ability) {
             $this->assertEquals('foo', $ability);
 
@@ -42,10 +84,37 @@ class GateTest extends PHPUnit_Framework_TestCase
     {
         $gate = $this->getBasicGate();
 
-        $gate->define('foo', function ($user) { return true; });
-        $gate->before(function () {});
+        $gate->define('foo', function ($user) {
+            return true;
+        });
+        $gate->before(function () {
+        });
 
         $this->assertTrue($gate->check('foo'));
+    }
+
+    public function test_after_callbacks_are_called_with_result()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->define('foo', function ($user) {
+            return true;
+        });
+        $gate->define('bar', function ($user) {
+            return false;
+        });
+
+        $gate->after(function ($user, $ability, $result) {
+            if ($ability == 'foo') {
+                $this->assertTrue($result, 'After callback on `foo` should receive true as result');
+            } else {
+                $this->assertFalse($result, 'After callback on `bar` or `missing` should receive false as result');
+            }
+        });
+
+        $this->assertTrue($gate->check('foo'));
+        $this->assertFalse($gate->check('bar'));
+        $this->assertFalse($gate->check('missing'));
     }
 
     public function test_current_user_that_is_on_gate_always_injected_into_closure_callbacks()
@@ -97,7 +166,7 @@ class GateTest extends PHPUnit_Framework_TestCase
     {
         $gate = $this->getBasicGate();
 
-        $gate->define('foo', 'AccessGateTestClass@foo');
+        $gate->define('foo', '\Illuminate\Tests\Auth\AccessGateTestClass@foo');
 
         $this->assertTrue($gate->check('foo'));
     }
@@ -111,7 +180,34 @@ class GateTest extends PHPUnit_Framework_TestCase
         $this->assertTrue($gate->check('update', new AccessGateTestDummy));
     }
 
-    public function test_policy_default_to_false_if_method_does_not_exist()
+    public function test_policy_classes_handle_checks_for_all_subtypes()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicy::class);
+
+        $this->assertTrue($gate->check('update', new AccessGateTestSubDummy));
+    }
+
+    public function test_policy_classes_handle_checks_for_interfaces()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummyInterface::class, AccessGateTestPolicy::class);
+
+        $this->assertTrue($gate->check('update', new AccessGateTestSubDummy));
+    }
+
+    public function test_policy_converts_dash_to_camel()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicy::class);
+
+        $this->assertTrue($gate->check('update-dash', new AccessGateTestDummy));
+    }
+
+    public function test_policy_default_to_false_if_method_does_not_exist_and_gate_does_not_exist()
     {
         $gate = $this->getBasicGate();
 
@@ -122,11 +218,11 @@ class GateTest extends PHPUnit_Framework_TestCase
 
     public function test_policy_classes_can_be_defined_to_handle_checks_for_given_class_name()
     {
-        $gate = $this->getBasicGate();
+        $gate = $this->getBasicGate(true);
 
         $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicy::class);
 
-        $this->assertTrue($gate->check('create', AccessGateTestDummy::class));
+        $this->assertTrue($gate->check('create', [AccessGateTestDummy::class, true]));
     }
 
     public function test_policies_may_have_before_methods_to_override_checks()
@@ -142,11 +238,26 @@ class GateTest extends PHPUnit_Framework_TestCase
     {
         $gate = $this->getBasicGate();
 
-        $gate->define('update', function () { $this->fail(); });
+        $gate->define('update', function () {
+            $this->fail();
+        });
 
         $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicy::class);
 
         $this->assertTrue($gate->check('update', new AccessGateTestDummy));
+    }
+
+    public function test_policies_defer_to_gates_if_method_does_not_exist()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->define('nonexistent_method', function ($user) {
+            return true;
+        });
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicy::class);
+
+        $this->assertTrue($gate->check('nonexistent_method', new AccessGateTestDummy));
     }
 
     public function test_for_user_method_attaches_a_new_user_to_a_new_gate_instance()
@@ -163,9 +274,104 @@ class GateTest extends PHPUnit_Framework_TestCase
         $this->assertTrue($gate->forUser((object) ['id' => 2])->check('foo'));
     }
 
-    protected function getBasicGate()
+    /**
+     * @expectedException \Illuminate\Auth\Access\AuthorizationException
+     * @expectedExceptionMessage You are not an admin.
+     */
+    public function test_authorize_throws_unauthorized_exception()
     {
-        return new Gate(new Container, function () { return (object) ['id' => 1]; });
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicy::class);
+
+        $gate->authorize('create', new AccessGateTestDummy);
+    }
+
+    public function test_authorize_returns_allowed_response()
+    {
+        $gate = $this->getBasicGate(true);
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicy::class);
+
+        $check = $gate->check('create', new AccessGateTestDummy);
+        $response = $gate->authorize('create', new AccessGateTestDummy);
+
+        $this->assertInstanceOf(Response::class, $response);
+        $this->assertNull($response->message());
+        $this->assertTrue($check);
+    }
+
+    public function test_authorize_returns_an_allowed_response_for_a_truthy_return()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicy::class);
+
+        $response = $gate->authorize('update', new AccessGateTestDummy);
+
+        $this->assertInstanceOf(Response::class, $response);
+        $this->assertNull($response->message());
+    }
+
+    protected function getBasicGate($isAdmin = false)
+    {
+        return new Gate(new Container, function () use ($isAdmin) {
+            return (object) ['id' => 1, 'isAdmin' => $isAdmin];
+        });
+    }
+
+    public function test_any_ability_check_passes_if_all_pass()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicyWithAllPermissions::class);
+
+        $this->assertTrue($gate->any(['edit', 'update'], new AccessGateTestDummy));
+    }
+
+    public function test_any_ability_check_passes_if_at_least_one_passes()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicyWithMixedPermissions::class);
+
+        $this->assertTrue($gate->any(['edit', 'update'], new AccessGateTestDummy));
+    }
+
+    public function test_any_ability_check_fails_if_none_pass()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicyWithNoPermissions::class);
+
+        $this->assertFalse($gate->any(['edit', 'update'], new AccessGateTestDummy));
+    }
+
+    public function test_every_ability_check_passes_if_all_pass()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicyWithAllPermissions::class);
+
+        $this->assertTrue($gate->check(['edit', 'update'], new AccessGateTestDummy));
+    }
+
+    public function test_every_ability_check_fails_if_at_least_one_fails()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicyWithMixedPermissions::class);
+
+        $this->assertFalse($gate->check(['edit', 'update'], new AccessGateTestDummy));
+    }
+
+    public function test_every_ability_check_fails_if_none_pass()
+    {
+        $gate = $this->getBasicGate();
+
+        $gate->policy(AccessGateTestDummy::class, AccessGateTestPolicyWithNoPermissions::class);
+
+        $this->assertFalse($gate->check(['edit', 'update'], new AccessGateTestDummy));
     }
 }
 
@@ -177,21 +383,48 @@ class AccessGateTestClass
     }
 }
 
-class AccessGateTestDummy
+interface AccessGateTestDummyInterface
+{
+    //
+}
+
+class AccessGateTestDummy implements AccessGateTestDummyInterface
+{
+    //
+}
+
+class AccessGateTestSubDummy extends AccessGateTestDummy
 {
     //
 }
 
 class AccessGateTestPolicy
 {
+    use HandlesAuthorization;
+
+    public function createAny($user, $additional)
+    {
+        return $additional;
+    }
+
     public function create($user)
     {
-        return true;
+        return $user->isAdmin ? $this->allow() : $this->deny('You are not an admin.');
+    }
+
+    public function updateAny($user, AccessGateTestDummy $dummy)
+    {
+        return ! $user->isAdmin;
     }
 
     public function update($user, AccessGateTestDummy $dummy)
     {
-        return $user instanceof StdClass;
+        return ! $user->isAdmin;
+    }
+
+    public function updateDash($user, AccessGateTestDummy $dummy)
+    {
+        return $user instanceof stdClass;
     }
 }
 
@@ -205,5 +438,80 @@ class AccessGateTestPolicyWithBefore
     public function update($user, AccessGateTestDummy $dummy)
     {
         return false;
+    }
+}
+
+class AccessGateTestResource
+{
+    public function view($user)
+    {
+        return true;
+    }
+
+    public function create($user)
+    {
+        return true;
+    }
+
+    public function update($user, AccessGateTestDummy $dummy)
+    {
+        return true;
+    }
+
+    public function delete($user, AccessGateTestDummy $dummy)
+    {
+        return true;
+    }
+}
+
+class AccessGateTestCustomResource
+{
+    public function foo($user)
+    {
+        return true;
+    }
+
+    public function bar($user)
+    {
+        return true;
+    }
+}
+
+class AccessGateTestPolicyWithMixedPermissions
+{
+    public function edit($user, AccessGateTestDummy $dummy)
+    {
+        return false;
+    }
+
+    public function update($user, AccessGateTestDummy $dummy)
+    {
+        return true;
+    }
+}
+
+class AccessGateTestPolicyWithNoPermissions
+{
+    public function edit($user, AccessGateTestDummy $dummy)
+    {
+        return false;
+    }
+
+    public function update($user, AccessGateTestDummy $dummy)
+    {
+        return false;
+    }
+}
+
+class AccessGateTestPolicyWithAllPermissions
+{
+    public function edit($user, AccessGateTestDummy $dummy)
+    {
+        return true;
+    }
+
+    public function update($user, AccessGateTestDummy $dummy)
+    {
+        return true;
     }
 }
